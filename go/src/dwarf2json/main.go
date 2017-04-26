@@ -21,8 +21,8 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.2.0"
-	FORMAT_VERSION = "2.1.0"
+	TOOL_VERSION   = "0.3.0"
+	FORMAT_VERSION = "3.0.0"
 )
 
 type vtypeMetadata struct {
@@ -43,7 +43,10 @@ type vtypeStruct struct {
 }
 
 type vtypeBaseType struct {
-	Size int64 `json:"size"`
+	Size   int64  `json:"size"`
+	Signed bool   `json:"signed"`
+	Kind   string `json:"kind"`
+	Endian string `json:"endian"`
 }
 
 type vtypeEnum struct {
@@ -177,6 +180,35 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 	return result
 }
 
+func new_basetype(dwarfType dwarf.Type, endian string) vtypeBaseType {
+	signed := true
+	kind := "int"
+
+	switch dwarfType.(type) {
+	case *dwarf.UintType:
+		signed = false
+	case *dwarf.UcharType:
+		signed = false
+		kind = "char"
+	case *dwarf.CharType:
+		kind = "char"
+	case *dwarf.BoolType:
+		kind = "bool"
+	case *dwarf.FloatType:
+		kind = "float"
+	}
+
+	bt :=
+		vtypeBaseType{
+			Size:   dwarfType.Size(),
+			Signed: signed,
+			Kind:   kind,
+			Endian: endian,
+		}
+
+	return bt
+}
+
 func metadata(fname string) vtypeMetadata {
 	result :=
 		vtypeMetadata{
@@ -206,6 +238,13 @@ func main() {
 	}
 	defer elf_file.Close()
 
+	var endian string
+	if elf_file.ByteOrder == binary.LittleEndian {
+		endian = "little"
+	} else {
+		endian = "big"
+	}
+
 	data, err := elf_file.DWARF()
 	if err != nil {
 		fmt.Printf("%v\n", err)
@@ -221,7 +260,7 @@ func main() {
 		Symbols:   make(map[string]vtypeSymbol),
 	}
 
-	doc.BaseTypes["void"] = vtypeBaseType{Size: 0}
+	doc.BaseTypes["void"] = vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
 	// go through the DWARF
 	reader := data.Reader()
@@ -331,17 +370,24 @@ func main() {
 				sym.SymbolType = type_name(genericType)
 			}
 			doc.Symbols[name] = sym
+		case dwarf.TagPointerType:
+			if _, present := doc.BaseTypes["pointer"]; !present {
+				genericType, err := data.Type(entry.Offset)
+				if err != nil {
+					break
+				}
+				doc.BaseTypes["pointer"] =
+					vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
+			}
 		case dwarf.TagBaseType:
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
 			}
 			common := genericType.Common()
-			bt :=
-				vtypeBaseType{
-					Size: common.ByteSize,
-				}
-			doc.BaseTypes[common.Name] = bt
+			if _, present := doc.BaseTypes[common.Name]; !present {
+				doc.BaseTypes[common.Name] = new_basetype(genericType, endian)
+			}
 		}
 	}
 
