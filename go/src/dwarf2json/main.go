@@ -22,7 +22,7 @@ const (
 const (
 	TOOL_NAME      = "dwarf2json"
 	TOOL_VERSION   = "0.3.0"
-	FORMAT_VERSION = "3.0.0"
+	FORMAT_VERSION = "4.0.0"
 )
 
 type vtypeMetadata struct {
