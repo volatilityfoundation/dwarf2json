@@ -21,9 +21,13 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.3.0"
-	FORMAT_VERSION = "4.0.0"
+	TOOL_VERSION   = "0.4.0"
+	FORMAT_VERSION = "4.1.0"
 )
+
+// The symbol names in this slice are part of Linux's read-only data
+// Their contents will be saved, if the symbol is found
+var constantDataSymbols []string = []string{"linux_banner"}
 
 type vtypeMetadata struct {
 	Source   map[string]string `json:"source"`
@@ -56,8 +60,9 @@ type vtypeEnum struct {
 }
 
 type vtypeSymbol struct {
-	SymbolType map[string]interface{} `json:"type"`
-	Address    uint64                 `json:"address"`
+	SymbolType   map[string]interface{} `json:"type"`
+	Address      uint64                 `json:"address"`
+	ConstantData []byte                 `json:"constant_data,omitempty"`
 }
 
 type vtypeJson struct {
@@ -223,6 +228,31 @@ func metadata(fname string) vtypeMetadata {
 	result.Producer["name"] = TOOL_NAME
 
 	return result
+}
+
+func readELFSymbol(file *elf.File, symbol elf.Symbol) ([]byte, error) {
+	var result []byte
+	var err error
+
+	for _, section := range file.Sections {
+		if section.Name == ".rodata" &&
+			(section.Flags&elf.SHF_ALLOC) == elf.SHF_ALLOC &&
+			section.Addr <= symbol.Value &&
+			(section.Addr+section.Size) >= (symbol.Value+symbol.Size) {
+
+			start := symbol.Value - section.Addr
+			end := start + symbol.Size
+			sectionData, err := section.Data()
+			if err == nil {
+				result = sectionData[start:end]
+			}
+
+			break
+		}
+
+	}
+
+	return result, err
 }
 
 func main() {
@@ -391,6 +421,12 @@ func main() {
 		}
 	}
 
+	// we convert the constantDataSymbols slice to a map for fast lookups
+	constantDataMap := make(map[string]bool)
+	for _, constantSymbol := range constantDataSymbols {
+		constantDataMap[constantSymbol] = false
+	}
+
 	// go through the ELF symbols looking for missing addresses
 	elfsymbols, err := elf_file.Symbols()
 	if err != nil {
@@ -403,12 +439,20 @@ func main() {
 	voidType["name"] = "void"
 
 	for _, elfsym := range elfsymbols {
+		var data []byte
+
+		_, ok := constantDataMap[elfsym.Name]
+		if ok {
+			data, _ = readELFSymbol(elf_file, elfsym)
+		}
+
 		sym, ok := doc.Symbols[elfsym.Name]
 		if ok && sym.Address == 0 {
 			sym.Address = elfsym.Value
+			sym.ConstantData = data
 			doc.Symbols[elfsym.Name] = sym
 		} else {
-			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
+			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
 			doc.Symbols[elfsym.Name] = newsym
 		}
 	}
