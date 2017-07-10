@@ -21,7 +21,7 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.4.0"
+	TOOL_VERSION   = "0.4.1"
 	FORMAT_VERSION = "4.1.0"
 )
 
@@ -365,12 +365,29 @@ func main() {
 			et :=
 				vtypeEnum{
 					Size:      enumType.ByteSize,
-					Base:      "unsigned long", // XXX TODO
+					Base:      "void", // replaced below, if match found
 					Constants: make(map[string]int64, 0),
 				}
+
+			if et.Size < 0 {
+				et.Size = 0
+			}
+
+			enumSigned := false
 			for _, v := range enumType.Val {
 				et.Constants[v.Name] = v.Val
+				if v.Val < 0 {
+					enumSigned = true
+				}
 			}
+
+			for baseName, baseType := range doc.BaseTypes {
+				if baseType.Kind == "int" && baseType.Size == enumType.ByteSize && baseType.Signed == enumSigned {
+					et.Base = baseName
+					break
+				}
+			}
+
 			doc.Enums[enum_name(enumType)] = et
 		case dwarf.TagVariable:
 			name, _ := entry.Val(dwarf.AttrName).(string)
