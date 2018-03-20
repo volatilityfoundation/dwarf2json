@@ -1,3 +1,7 @@
+// This file is Copyright 2019 Volatility Foundation, Inc. and licensed under
+// the Volatility Software License 1.0, which is available at
+// https://www.volatilityfoundation.org/license/vsl-v1.0
+
 // utility for converting DWARF in ELF to JSON
 
 package main
@@ -7,12 +11,16 @@ import (
 	"crypto/sha1"
 	"debug/dwarf"
 	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -21,13 +29,20 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.4.1"
+	TOOL_VERSION   = "0.5.0"
 	FORMAT_VERSION = "4.1.0"
 )
 
-// The symbol names in this slice are part of Linux's read-only data
+// The symbol names are part of Linux's or Mac's read-only data
 // Their contents will be saved, if the symbol is found
-var constantDataSymbols []string = []string{"linux_banner"}
+var constantLinuxDataSymbols = []string{"linux_banner"}
+var constantMacosDataSymbols = []string{"version"}
+
+// The compiler can add a leading underscore to symbol names in the symbol
+// table. To match the names from a mach-O file to those in the DWARF file, the
+// symbol from the mach-O file may need to be stripped of the leading
+// underscore.
+var stripLeadingUnderscore = false
 
 type vtypeMetadata struct {
 	Source   map[string]string `json:"source"`
@@ -175,7 +190,7 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 		result = type_name(t.Type)
 	case *dwarf.QualType:
 		result = type_name(t.Type)
-	case *dwarf.VoidType:
+	case *dwarf.VoidType, *dwarf.UnspecifiedType:
 		result["kind"] = "base"
 		result["name"] = "void"
 	case *dwarf.FuncType:
@@ -255,35 +270,185 @@ func readELFSymbol(file *elf.File, symbol elf.Symbol) ([]byte, error) {
 	return result, err
 }
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Printf("Usage: %s <ELF>\n", TOOL_NAME)
-		os.Exit(255)
+func readMachoSymbol(file *macho.File, symbol macho.Symbol, length uint64) ([]byte, error) {
+	var result []byte
+	var err error
+
+	for _, section := range file.Sections {
+		if section.Name == "__const" && section.Addr <= symbol.Value &&
+			(section.Addr+section.Size) >= (symbol.Value+length) {
+
+			start := symbol.Value - section.Addr
+			end := start + length
+			sectionData, err := section.Data()
+			if err == nil {
+				result = sectionData[start:end]
+			}
+
+			break
+		}
+
 	}
 
-	elf_file, err := elf.Open(os.Args[1])
-	if err != nil {
-		fmt.Printf("%v\n", err)
+	return result, err
+}
+
+func main() {
+	var elfFile *elf.File
+	var machoDwarfFile, machoFile *macho.File
+	var peFile *pe.File
+	var fatDwarfFile *macho.FatFile
+	var err error
+
+	arch := flag.String("arch", "x86_64", "architecture for universal FAT files, ignored for other file types")
+	flag.Parse()
+
+	if len(flag.Args()) != 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [-arch <ARCH>] <FILE>\n", TOOL_NAME)
 		os.Exit(255)
 	}
-	defer elf_file.Close()
+	dwarfPath := flag.Args()[0]
+
+	elfFile, err = elf.Open(dwarfPath)
+	if err == nil {
+		defer elfFile.Close()
+		goto fileIdentified
+	}
+
+	machoDwarfFile, err = macho.Open(dwarfPath)
+	if err == nil {
+		// macOS typically has a standard dSYM and parent mach-O file path
+		// relationship. We can use that to find the mach-O file.
+		//
+		// For example:
+		//   DWARF: <dir>/someprog.dSYM/Contents/Resources/DWARF/someprog
+		//   macho: <dir>/someprog
+		machoPath := filepath.Join(dwarfPath, "../../../../..", filepath.Base(dwarfPath))
+		_, err = os.Stat(machoPath)
+		if err == nil {
+			machoFile, err = macho.Open(machoPath)
+			if err == nil {
+				defer machoFile.Close()
+			}
+		}
+		defer machoDwarfFile.Close()
+		goto fileIdentified
+	}
+
+	peFile, err = pe.Open(dwarfPath)
+	if err == nil {
+		defer peFile.Close()
+		goto fileIdentified
+	}
+
+	// Universal FAT binaries have multiple architectures embedded in a single file
+	// A user provided archicture is used to select which architecture to use
+	// for processing. This selection is used for both the DWARF file and
+	// mach-O file, if one is found.
+	fatDwarfFile, err = macho.OpenFat(dwarfPath)
+	if err == nil {
+		var cpu macho.Cpu
+		var found bool
+
+		// Convert user provided arch string to macho.Cpu
+		switch *arch {
+		case "i386":
+			cpu = macho.Cpu386
+		case "x86_64":
+			cpu = macho.CpuAmd64
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown arch type %s. Supported types are i386 and x86_64\n", *arch)
+			os.Exit(255)
+		}
+
+		// Select the embedded dwarf file that matches the user architecture
+		for _, a := range fatDwarfFile.Arches {
+			if a.Cpu == cpu {
+				machoDwarfFile = a.File
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			fmt.Fprintf(os.Stderr, "%s is in universal FAT format, but does not contain requested architecture %s\n", dwarfPath, *arch)
+			os.Exit(255)
+		}
+
+		defer fatDwarfFile.Close()
+
+		// macOS typically has a standard dSYM and parent mach-O file path
+		// relationship. We can use that to find the mach-O file.
+		//
+		// For example:
+		//   DWARF: <dir>/someprog.dSYM/Contents/Resources/DWARF/someprog
+		//   macho: <dir>/someprog
+		machoFatPath := filepath.Join(dwarfPath, "../../../../..", filepath.Base(dwarfPath))
+		_, err = os.Stat(machoFatPath)
+		if err == nil {
+			machoFatFile, err := macho.OpenFat(machoFatPath)
+			if err == nil {
+				defer machoFatFile.Close()
+			}
+
+			// Select the embedded macho file that matches the user architecture
+			for _, a := range machoFatFile.Arches {
+				if a.Cpu == cpu {
+					machoFile = a.File
+					break
+				}
+			}
+
+		}
+		defer machoDwarfFile.Close()
+		goto fileIdentified
+	}
+
+	// Reaching this code means that dwarfpath was not identified as a known
+	// file type.
+	fmt.Fprintf(os.Stderr, "%s not valid ELF, Mach-O, or PE\n", dwarfPath)
+	os.Exit(255)
+
+fileIdentified:
 
 	var endian string
-	if elf_file.ByteOrder == binary.LittleEndian {
-		endian = "little"
-	} else {
-		endian = "big"
-	}
+	var data *dwarf.Data
 
-	data, err := elf_file.DWARF()
-	if err != nil {
-		fmt.Printf("%v\n", err)
-		os.Exit(255)
+	if elfFile != nil {
+		if elfFile.ByteOrder == binary.LittleEndian {
+			endian = "little"
+		} else {
+			endian = "big"
+		}
+		data, err = elfFile.DWARF()
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			os.Exit(255)
+		}
+	} else if machoDwarfFile != nil {
+		if machoDwarfFile.ByteOrder == binary.LittleEndian {
+			endian = "little"
+		} else {
+			endian = "big"
+		}
+		data, err = machoDwarfFile.DWARF()
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			os.Exit(255)
+		}
+	} else {
+		endian = "little"
+
+		data, err = peFile.DWARF()
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			os.Exit(255)
+		}
 	}
 
 	// setup the output document
 	doc := vtypeJson{
-		Metadata:  metadata(os.Args[1]),
+		Metadata:  metadata(flag.Args()[0]),
 		BaseTypes: make(map[string]vtypeBaseType),
 		UserTypes: make(map[string]vtypeStruct),
 		Enums:     make(map[string]vtypeEnum),
@@ -415,6 +580,11 @@ func main() {
 			genericType, err := data.Type(typOff)
 			if err == nil {
 				sym.SymbolType = type_name(genericType)
+			} else {
+				voidType := make(map[string]interface{}, 0)
+				voidType["kind"] = "base"
+				voidType["name"] = "void"
+				sym.SymbolType = voidType
 			}
 			doc.Symbols[name] = sym
 		case dwarf.TagPointerType:
@@ -438,39 +608,128 @@ func main() {
 		}
 	}
 
-	// we convert the constantDataSymbols slice to a map for fast lookups
-	constantDataMap := make(map[string]bool)
-	for _, constantSymbol := range constantDataSymbols {
-		constantDataMap[constantSymbol] = false
-	}
+	if elfFile != nil {
 
-	// go through the ELF symbols looking for missing addresses
-	elfsymbols, err := elf_file.Symbols()
-	if err != nil {
-		fmt.Printf("%v\n", err)
-		os.Exit(255)
-	}
-
-	voidType := make(map[string]interface{}, 0)
-	voidType["kind"] = "base"
-	voidType["name"] = "void"
-
-	for _, elfsym := range elfsymbols {
-		var data []byte
-
-		_, ok := constantDataMap[elfsym.Name]
-		if ok {
-			data, _ = readELFSymbol(elf_file, elfsym)
+		// we convert the constantDataSymbols slice to a map for fast lookups
+		constantDataMap := make(map[string]bool)
+		for _, constantSymbol := range constantLinuxDataSymbols {
+			constantDataMap[constantSymbol] = false
 		}
 
-		sym, ok := doc.Symbols[elfsym.Name]
-		if ok && sym.Address == 0 {
-			sym.Address = elfsym.Value
-			sym.ConstantData = data
-			doc.Symbols[elfsym.Name] = sym
-		} else {
-			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
-			doc.Symbols[elfsym.Name] = newsym
+		// go through the ELF symbols looking for missing addresses
+		elfsymbols, err := elfFile.Symbols()
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			os.Exit(255)
+		}
+
+		voidType := make(map[string]interface{}, 0)
+		voidType["kind"] = "base"
+		voidType["name"] = "void"
+
+		for _, elfsym := range elfsymbols {
+			var data []byte
+
+			_, ok := constantDataMap[elfsym.Name]
+			if ok {
+				data, _ = readELFSymbol(elfFile, elfsym)
+			}
+
+			sym, ok := doc.Symbols[elfsym.Name]
+			if ok && sym.Address == 0 {
+				sym.Address = elfsym.Value
+				sym.ConstantData = data
+				doc.Symbols[elfsym.Name] = sym
+			} else {
+				newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
+				doc.Symbols[elfsym.Name] = newsym
+			}
+		}
+	}
+
+	// Iterate over mach-O symbols in symtab. The symbols in symtab have an
+	// address and name, but do not have type information. We can use this
+	// symtab to fill in the missing addresses for symbols from DWARF.
+	//
+	// To compensate for the fact that the compiler adds a "_" prefix to symtab
+	// symbols, we must check both the symbol name as it appears in symtab
+	// (with "_") and also attempt to strip the leading "_" and check for that
+	// symbol.
+	if machoDwarfFile != nil {
+
+		// we convert the constantDataSymbols slice to a map for fast lookups
+		constantDataMap := make(map[string]bool)
+		for _, constantSymbol := range constantMacosDataSymbols {
+			constantDataMap[constantSymbol] = false
+		}
+
+		symtab := machoDwarfFile.Symtab
+		if symtab == nil {
+			fmt.Printf("Symtab command does not exist\n")
+			os.Exit(255)
+		}
+		machoSyms := symtab.Syms
+		if machoSyms == nil {
+			fmt.Printf("Symtab does not have any symbols\n")
+			os.Exit(255)
+		}
+
+		voidType := make(map[string]interface{}, 0)
+		voidType["kind"] = "base"
+		voidType["name"] = "void"
+
+		// Determine how the names from symtab map to those of the DWARF with
+		// respect to the presence or absence of the leading underscore
+		exactMatchCount := 0
+		strippedUnderscoreMatchCount := 0
+		for _, machosym := range machoSyms {
+			strippedName := strings.TrimPrefix(machosym.Name, "_")
+			if _, ok := doc.Symbols[machosym.Name]; ok {
+				exactMatchCount++
+			}
+			if _, ok := doc.Symbols[strippedName]; ok {
+				strippedUnderscoreMatchCount++
+			}
+		}
+
+		// If more stripped-underscore-symbols match, then the underscore
+		// should be stripped from processing
+		stripLeadingUnderscore = strippedUnderscoreMatchCount > exactMatchCount
+
+		for _, machosym := range machoSyms {
+			var data []byte
+
+			symName := machosym.Name
+			if stripLeadingUnderscore {
+				symName = strings.TrimPrefix(symName, "_")
+			}
+
+			sym, ok := doc.Symbols[symName]
+			if ok {
+				// check if symbol exists as is and its address is 0
+				if sym.Address == 0 {
+					sym.Address = machosym.Value
+					doc.Symbols[symName] = sym
+				}
+				_, ok := constantDataMap[symName]
+				if !ok {
+					continue
+				}
+				dataLen, ok := sym.SymbolType["count"].(int64)
+				if !ok {
+					continue
+				}
+				data, err = readMachoSymbol(machoFile, machosym, uint64(dataLen))
+				if err != nil {
+					continue
+				}
+				sym.ConstantData = data
+				doc.Symbols[symName] = sym
+			} else {
+				// else DWARF does not have this symbol so create a new symbol
+				newsym := vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
+				doc.Symbols[symName] = newsym
+			}
 		}
 	}
 
