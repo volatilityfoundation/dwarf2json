@@ -4,7 +4,7 @@ Intermediate Symbol File (ISF) JSON output.
 
 To build (Go required):
 ```
-  $ GOPATH=`pwd`/go go install dwarf2json
+  $ go build
 ```
 
 To run:
