@@ -512,7 +512,11 @@ fileIdentified:
 					} else {
 						vtypeField.FieldType = type_name(field.Type)
 					}
-					st.Fields[fieldName] = vtypeField
+
+					// output fields with a type
+					if vtypeField.FieldType != nil {
+						st.Fields[fieldName] = vtypeField
+					}
 				}
 			}
 
