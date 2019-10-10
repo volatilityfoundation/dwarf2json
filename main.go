@@ -51,7 +51,7 @@ type vtypeMetadata struct {
 }
 
 type vtypeStructField struct {
-	FieldType map[string]interface{} `json:"type"`
+	FieldType map[string]interface{} `json:"type,omitempty"`
 	Offset    int64                  `json:"offset"`
 }
 
@@ -75,7 +75,7 @@ type vtypeEnum struct {
 }
 
 type vtypeSymbol struct {
-	SymbolType   map[string]interface{} `json:"type"`
+	SymbolType   map[string]interface{} `json:"type,omitempty"`
 	Address      uint64                 `json:"address"`
 	ConstantData []byte                 `json:"constant_data,omitempty"`
 }
@@ -164,8 +164,6 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 	result := make(map[string]interface{}, 0)
 
 	switch t := dwarfType.(type) {
-	default:
-		result["kind"] = "unknown"
 	case *dwarf.StructType:
 		result["kind"] = t.Kind
 		result["name"] = struct_name(t)
@@ -195,6 +193,9 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 		result["name"] = "void"
 	case *dwarf.FuncType:
 		result["kind"] = "function"
+	// *dwarf.UnsupportedType:
+	default:
+		return nil
 	}
 
 	return result
@@ -511,7 +512,11 @@ fileIdentified:
 					} else {
 						vtypeField.FieldType = type_name(field.Type)
 					}
-					st.Fields[fieldName] = vtypeField
+
+					// output fields with a type
+					if vtypeField.FieldType != nil {
+						st.Fields[fieldName] = vtypeField
+					}
 				}
 			}
 
