@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -551,7 +552,15 @@ fileIdentified:
 				}
 			}
 
-			for baseName, baseType := range doc.BaseTypes {
+			// Sort keys to make map enum type selection deterministic
+			keys := make([]string, len(doc.BaseTypes))
+			for k := range doc.BaseTypes {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			// Now match type using sorted keys
+			for _, baseName := range keys {
+				baseType := doc.BaseTypes[baseName]
 				if baseType.Kind == "int" && baseType.Size == enumType.ByteSize && baseType.Signed == enumSigned {
 					et.Base = baseName
 					break
