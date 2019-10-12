@@ -2,6 +2,9 @@
 generates [Volatilty3](https://github.com/volatilityfoundation/volatility3)
 Intermediate Symbol File (ISF) JSON output.
 
+Apple and several Linux distributions split debug DWARF information into
+separate files.  `dwarf2json` is able to combine DWARF type information with symbol information from a mach-O or an ELF file.
+
 To build (Go required):
 ```
   $ go build
@@ -9,7 +12,17 @@ To build (Go required):
 
 To run:
 ```
-  $ ./dwarf2json input_file > output_JSON_file
+  $ ./dwarf2json --help
+```
+
+To process macOS file:
+```
+  $ ./dwarf2json mac --dwarf /path/to/dwarf --macho /path/to/macho > output.json
+```
+
+To process Linux file:
+```
+  $ ./dwarf2json linux --dwarf /path/to/dwarf --elf /path/to/elf > output.json
 ```
 
 When processing universal FAT binaries, the `-arch` flag needs to be used to

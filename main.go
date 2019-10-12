@@ -12,16 +12,16 @@ import (
 	"debug/dwarf"
 	"debug/elf"
 	"debug/macho"
-	"debug/pe"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/spf13/pflag"
 )
 
 const (
@@ -296,161 +296,226 @@ func readMachoSymbol(file *macho.File, symbol macho.Symbol, length uint64) ([]by
 }
 
 func main() {
-	var elfFile *elf.File
+	var elfDwarfFile, elfFile *elf.File
 	var machoDwarfFile, machoFile *macho.File
-	var peFile *pe.File
-	var fatDwarfFile *macho.FatFile
 	var err error
-
-	arch := flag.String("arch", "x86_64", "architecture for universal FAT files, ignored for other file types")
-	flag.Parse()
-
-	if len(flag.Args()) != 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-arch <ARCH>] <FILE>\n", TOOL_NAME)
-		os.Exit(255)
-	}
-	dwarfPath := flag.Args()[0]
-
-	elfFile, err = elf.Open(dwarfPath)
-	if err == nil {
-		defer elfFile.Close()
-		goto fileIdentified
-	}
-
-	machoDwarfFile, err = macho.Open(dwarfPath)
-	if err == nil {
-		// macOS typically has a standard dSYM and parent mach-O file path
-		// relationship. We can use that to find the mach-O file.
-		//
-		// For example:
-		//   DWARF: <dir>/someprog.dSYM/Contents/Resources/DWARF/someprog
-		//   macho: <dir>/someprog
-		machoPath := filepath.Join(dwarfPath, "../../../../..", filepath.Base(dwarfPath))
-		_, err = os.Stat(machoPath)
-		if err == nil {
-			machoFile, err = macho.Open(machoPath)
-			if err == nil {
-				defer machoFile.Close()
-			}
-		}
-		defer machoDwarfFile.Close()
-		goto fileIdentified
-	}
-
-	peFile, err = pe.Open(dwarfPath)
-	if err == nil {
-		defer peFile.Close()
-		goto fileIdentified
-	}
-
-	// Universal FAT binaries have multiple architectures embedded in a single file
-	// A user provided archicture is used to select which architecture to use
-	// for processing. This selection is used for both the DWARF file and
-	// mach-O file, if one is found.
-	fatDwarfFile, err = macho.OpenFat(dwarfPath)
-	if err == nil {
-		var cpu macho.Cpu
-		var found bool
-
-		// Convert user provided arch string to macho.Cpu
-		switch *arch {
-		case "i386":
-			cpu = macho.Cpu386
-		case "x86_64":
-			cpu = macho.CpuAmd64
-		default:
-			fmt.Fprintf(os.Stderr, "Unknown arch type %s. Supported types are i386 and x86_64\n", *arch)
-			os.Exit(255)
-		}
-
-		// Select the embedded dwarf file that matches the user architecture
-		for _, a := range fatDwarfFile.Arches {
-			if a.Cpu == cpu {
-				machoDwarfFile = a.File
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			fmt.Fprintf(os.Stderr, "%s is in universal FAT format, but does not contain requested architecture %s\n", dwarfPath, *arch)
-			os.Exit(255)
-		}
-
-		defer fatDwarfFile.Close()
-
-		// macOS typically has a standard dSYM and parent mach-O file path
-		// relationship. We can use that to find the mach-O file.
-		//
-		// For example:
-		//   DWARF: <dir>/someprog.dSYM/Contents/Resources/DWARF/someprog
-		//   macho: <dir>/someprog
-		machoFatPath := filepath.Join(dwarfPath, "../../../../..", filepath.Base(dwarfPath))
-		_, err = os.Stat(machoFatPath)
-		if err == nil {
-			machoFatFile, err := macho.OpenFat(machoFatPath)
-			if err == nil {
-				defer machoFatFile.Close()
-			}
-
-			// Select the embedded macho file that matches the user architecture
-			for _, a := range machoFatFile.Arches {
-				if a.Cpu == cpu {
-					machoFile = a.File
-					break
-				}
-			}
-
-		}
-		defer machoDwarfFile.Close()
-		goto fileIdentified
-	}
-
-	// Reaching this code means that dwarfpath was not identified as a known
-	// file type.
-	fmt.Fprintf(os.Stderr, "%s not valid ELF, Mach-O, or PE\n", dwarfPath)
-	os.Exit(255)
-
-fileIdentified:
-
 	var endian string
 	var data *dwarf.Data
+	var filename string
 
-	if elfFile != nil {
-		if elfFile.ByteOrder == binary.LittleEndian {
-			endian = "little"
-		} else {
-			endian = "big"
-		}
-		data, err = elfFile.DWARF()
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			os.Exit(255)
-		}
-	} else if machoDwarfFile != nil {
-		if machoDwarfFile.ByteOrder == binary.LittleEndian {
-			endian = "little"
-		} else {
-			endian = "big"
-		}
-		data, err = machoDwarfFile.DWARF()
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			os.Exit(255)
-		}
-	} else {
-		endian = "little"
+	// Help message setup
+	pflag.Usage = func() {
+		fmt.Fprintf(
+			os.Stderr,
+			`Usage: %s COMMAND
 
-		data, err = peFile.DWARF()
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			os.Exit(255)
+A tool for generating intermediate symbol file (ISF)
+
+Commands:
+  linux  generate ISF for Linux analysis
+  mac    generate ISF for macOS analysis
+
+`,
+			os.Args[0])
+		// pflag.PrintDefaults()
+	}
+	pflag.ErrHelp = errors.New("")
+
+	// mac subcommand setup
+	macArgs := pflag.NewFlagSet("mac", pflag.ExitOnError)
+	isFat := macArgs.Bool("fat", false, "universal FAT binary (default: false)")
+	arch := macArgs.String("arch", "x86_64", "architecture for universal FAT files {i386|x86_64} (Optional)")
+	machoPath := macArgs.String("macho", "", "Mach-O file to process (Optional)")
+	machoDwarfPath := macArgs.String("dwarf", "", "DWARF file to process (Optional)")
+	macArgs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s mac [OPTIONS]\n\n", TOOL_NAME)
+		macArgs.PrintDefaults()
+	}
+
+	// linux subcommand setup
+	linuxArgs := pflag.NewFlagSet("linux", pflag.ExitOnError)
+	elfPath := linuxArgs.String("elf", "", "ELF file to process (Optional)")
+	// systemMapPath := linuxArgs.String("system-map", "", "system.map file to process (Optional)")
+	elfDwarfPath := linuxArgs.String("dwarf", "", "DWARF file to process (Optional)")
+	linuxArgs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
+		linuxArgs.PrintDefaults()
+	}
+
+	if len(os.Args) < 2 {
+		pflag.Usage()
+		os.Exit(0)
+	}
+
+	// Switch on the subcommand
+	switch os.Args[1] {
+	case "mac":
+		macArgs.Parse(os.Args[2:])
+
+		// Non-FAT processing
+		if !*isFat {
+			if *machoDwarfPath != "" {
+				machoDwarfFile, err = macho.Open(*machoDwarfPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s not valid Mach-O DWARF\n", *machoDwarfPath)
+					os.Exit(255)
+				}
+				defer machoDwarfFile.Close()
+				filename = filepath.Base(*machoDwarfPath)
+			}
+			if *machoPath != "" {
+				machoFile, err = macho.Open(*machoPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s not valid Mach-O\n", *machoDwarfPath)
+					os.Exit(255)
+				}
+				defer machoFile.Close()
+				if filename == "" {
+					filename = filepath.Base(*machoPath)
+				}
+			}
+			// FAT proccessing
+		} else {
+			if *machoDwarfPath != "" {
+				fatDwarfFile, err := macho.OpenFat(*machoDwarfPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s not valid Mach-O DWARF\n", *machoDwarfPath)
+					os.Exit(255)
+				}
+				defer fatDwarfFile.Close()
+				filename = filepath.Base(*machoDwarfPath)
+
+				var cpu macho.Cpu
+				var found bool
+
+				// Convert user provided arch string to macho.Cpu
+				switch *arch {
+				case "i386":
+					cpu = macho.Cpu386
+				case "x86_64":
+					cpu = macho.CpuAmd64
+				default:
+					fmt.Fprintf(os.Stderr, "Unknown arch type %s. Supported types are i386 and x86_64\n", *arch)
+					os.Exit(255)
+				}
+
+				// Select the embedded dwarf file that matches the user architecture
+				for _, a := range fatDwarfFile.Arches {
+					if a.Cpu == cpu {
+						machoDwarfFile = a.File
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					fmt.Fprintf(os.Stderr, "%s is in universal FAT format, but does not contain requested architecture %s\n", *machoDwarfPath, *arch)
+					os.Exit(255)
+				}
+			}
+			if *machoPath != "" {
+				fatMachoFile, err := macho.OpenFat(*machoPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s not valid Mach-O\n", *machoPath)
+					os.Exit(255)
+				}
+				defer fatMachoFile.Close()
+				if filename == "" {
+					filename = filepath.Base(*machoPath)
+				}
+
+				var cpu macho.Cpu
+				var found bool
+
+				// Convert user provided arch string to macho.Cpu
+				switch *arch {
+				case "i386":
+					cpu = macho.Cpu386
+				case "x86_64":
+					cpu = macho.CpuAmd64
+				default:
+					fmt.Fprintf(os.Stderr, "Unknown arch type %s. Supported types are i386 and x86_64\n", *arch)
+					os.Exit(255)
+				}
+
+				// Select the embedded dwarf file that matches the user architecture
+				for _, a := range fatMachoFile.Arches {
+					if a.Cpu == cpu {
+						machoFile = a.File
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					fmt.Fprintf(os.Stderr, "%s is in universal FAT format, but does not contain requested architecture %s\n", *machoPath, *arch)
+					os.Exit(255)
+				}
+			}
 		}
+		if machoDwarfFile != nil {
+			if machoDwarfFile.ByteOrder == binary.LittleEndian {
+				endian = "little"
+			} else {
+				endian = "big"
+			}
+			data, err = machoDwarfFile.DWARF()
+			if err != nil {
+				fmt.Printf("%v\n", err)
+				os.Exit(255)
+			}
+		}
+	case "linux":
+		linuxArgs.Parse(os.Args[2:])
+		if *elfDwarfPath != "" {
+			elfDwarfFile, err = elf.Open(*elfDwarfPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s not valid ELF DWARF file\n", *elfDwarfPath)
+				os.Exit(255)
+			}
+			defer elfDwarfFile.Close()
+			filename = filepath.Base(*elfDwarfPath)
+
+			if elfDwarfFile.ByteOrder == binary.LittleEndian {
+				endian = "little"
+			} else {
+				endian = "big"
+			}
+			data, err = elfDwarfFile.DWARF()
+			if err != nil {
+				fmt.Printf("%v\n", err)
+				os.Exit(255)
+			}
+		}
+		if *elfPath != "" {
+			elfFile, err = elf.Open(*elfPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s not valid ELF file\n", *elfPath)
+				os.Exit(255)
+			}
+			defer elfFile.Close()
+			if filename == "" {
+				filename = filepath.Base(*elfPath)
+			}
+		}
+	case "-h", "--help":
+		pflag.Usage()
+		os.Exit(0)
+	default:
+		fmt.Fprintf(
+			os.Stderr,
+			"%s: '%s' is not a %s command.\nSee '%s --help'\n",
+			TOOL_NAME,
+			os.Args[1],
+			TOOL_NAME,
+			TOOL_NAME,
+		)
+		os.Exit(1)
 	}
 
 	// setup the output document
 	doc := vtypeJson{
-		Metadata:  metadata(flag.Args()[0]),
+		Metadata:  metadata(filename),
 		BaseTypes: make(map[string]vtypeBaseType),
 		UserTypes: make(map[string]vtypeStruct),
 		Enums:     make(map[string]vtypeEnum),
@@ -484,6 +549,7 @@ fileIdentified:
 			}
 			structType, ok := genericType.(*dwarf.StructType)
 			if ok != true {
+				// TODO: convert to error
 				fmt.Printf("%s is not a StructType?\n", genericType.String())
 				break
 			}
@@ -530,6 +596,7 @@ fileIdentified:
 			}
 			enumType, ok := genericType.(*dwarf.EnumType)
 			if ok != true {
+				// TODO: convert to error
 				fmt.Printf("%s is not an EnumType?\n", genericType.String())
 				break
 			}
