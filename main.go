@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"debug/dwarf"
@@ -16,9 +17,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -922,7 +925,48 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 		}
 
 	}
+	if systemMapPath != "" {
+		systemMap, err := os.Open(systemMapPath)
+		if err != nil {
+			return nil, fmt.Errorf("could not open %s: %v", systemMapPath, err)
+		}
+		defer systemMap.Close()
+		err = processSystemMap(doc, systemMap)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error adding symbols from %s: %v\n", systemMapPath, err)
+		}
+	}
 	return doc, nil
+}
+
+// processSystemMap adds the missing symbol information from system.map to vtypeJson doc
+func processSystemMap(doc *vtypeJson, systemMap io.Reader) error {
+
+	voidType := make(map[string]interface{}, 0)
+	voidType["kind"] = "base"
+	voidType["name"] = "void"
+
+	scanner := bufio.NewScanner(systemMap)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		words := strings.Fields(line)
+		addr, err := strconv.ParseUint(words[0], 16, 64)
+		if err != nil {
+			return fmt.Errorf("failed parsing %s", line)
+		}
+		symName := words[2]
+
+		sym, ok := doc.Symbols[symName]
+		if ok && sym.Address == 0 {
+			sym.Address = addr
+			doc.Symbols[symName] = sym
+		} else {
+			newsym := vtypeSymbol{Address: addr, SymbolType: voidType}
+			doc.Symbols[symName] = newsym
+		}
+	}
+	return nil
 }
 
 // processElfSymTab adds missing symbol information from SymTab to the vtypeJson doc
