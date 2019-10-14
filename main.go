@@ -37,6 +37,42 @@ const (
 	FORMAT_VERSION = "4.1.0"
 )
 
+// Extract defines the type/symbol information that should be processed
+type Extract int
+
+// Defines information to extract during processing steps
+const (
+	ExtractDwarfSymbols  Extract = 1
+	ExtractDwarfTypes    Extract = 2
+	ExtractSymTabSymbols Extract = 4
+	ExtractConstantData  Extract = 8
+)
+
+// FileToProcess defines the file that needs to be processed and
+// information that should be extracted from that file
+type FileToProcess struct {
+	FilePath string
+	Extract  Extract
+}
+
+// FilesToProcess is a list of file that need processing
+type FilesToProcess []FileToProcess
+
+// Add intelligently adds a file to processing queue
+func (f *FilesToProcess) Add(newFile FileToProcess) {
+	// if file path of the new file exists, then update what needs to be done
+	for i := range *f {
+		if (*f)[i].FilePath == newFile.FilePath {
+			fmt.Printf("updating Extract %v --> %v\n", (*f)[i].Extract, (*f)[i].Extract|newFile.Extract)
+			(*f)[i].Extract |= newFile.Extract
+			return
+		}
+	}
+
+	// else add a new entry
+	*f = append(*f, newFile)
+}
+
 // The symbol names are part of Linux's or Mac's read-only data
 // Their contents will be saved, if the symbol is found
 var constantLinuxDataSymbols = []string{"linux_banner"}
@@ -122,7 +158,7 @@ type vtypeJson struct {
 	Symbols   map[string]vtypeSymbol   `json:"symbols"`
 }
 
-func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
+func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) error {
 
 	doc.BaseTypes["void"] = vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
@@ -142,6 +178,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 		case dwarf.TagUnionType:
 			fallthrough
 		case dwarf.TagStructType:
+			if what&ExtractDwarfTypes == 0 {
+				continue
+			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -189,6 +228,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 			name := struct_name(structType)
 			doc.UserTypes[name] = st
 		case dwarf.TagEnumerationType:
+			if what&ExtractDwarfTypes == 0 {
+				continue
+			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -235,6 +277,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 
 			doc.Enums[enum_name(enumType)] = et
 		case dwarf.TagVariable:
+			if what&ExtractDwarfSymbols == 0 {
+				continue
+			}
 			name, _ := entry.Val(dwarf.AttrName).(string)
 			typOff, _ := entry.Val(dwarf.AttrType).(dwarf.Offset)
 			loc := entry.AttrField(dwarf.AttrLocation)
@@ -268,6 +313,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 			}
 			doc.Symbols[name] = sym
 		case dwarf.TagPointerType:
+			if what&ExtractDwarfTypes == 0 {
+				continue
+			}
 			if _, present := doc.BaseTypes["pointer"]; !present {
 				genericType, err := data.Type(entry.Offset)
 				if err != nil {
@@ -277,6 +325,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 					vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
 			}
 		case dwarf.TagBaseType:
+			if what&ExtractDwarfTypes == 0 {
+				continue
+			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -503,8 +554,9 @@ Commands:
 	macArgs := pflag.NewFlagSet("mac", pflag.ExitOnError)
 	isFat := macArgs.Bool("fat", false, "universal FAT binary (default: false)")
 	arch := macArgs.String("arch", "x86_64", "architecture for universal FAT files {i386|x86_64} (Optional)")
-	machoPath := macArgs.String("macho", "", "Mach-O file to process (Optional)")
-	machoDwarfPath := macArgs.String("dwarf", "", "DWARF file to process (Optional)")
+	machoSymbolPaths := macArgs.StringArray("macho-symbols", nil, "Mach-O files to extract symbol information (Optional)")
+	machoTypePaths := macArgs.StringArray("macho-types", nil, "files to extract type information (Optional)")
+	machoPaths := macArgs.StringArray("macho", nil, "files to extract symbol and type information (Optional)")
 	macArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s mac [OPTIONS]\n\n", TOOL_NAME)
 		macArgs.PrintDefaults()
@@ -532,7 +584,25 @@ Commands:
 	switch os.Args[1] {
 	case "mac":
 		macArgs.Parse(os.Args[2:])
-		doc, err = generateMac(*machoPath, *machoDwarfPath, *arch, *isFat)
+
+		var filesToProcess FilesToProcess
+		// Type and Symbols
+		for _, filePath := range *machoPaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractSymTabSymbols | ExtractDwarfSymbols | ExtractDwarfTypes | ExtractConstantData})
+		}
+
+		// Type only
+		for _, filePath := range *machoTypePaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractDwarfTypes})
+		}
+
+		//Symbol only
+		for _, filePath := range *machoSymbolPaths {
+			// filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractDwarfSymbols | ExtractSymTabSymbols | ExtractConstantData})
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractSymTabSymbols | ExtractConstantData})
+		}
+
+		doc, err = generateMac(filesToProcess, *arch, *isFat)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed mac processing: %v\n", err)
 			os.Exit(1)
@@ -567,164 +637,191 @@ Commands:
 	os.Stdout.Write(b)
 }
 
-func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*vtypeJson, error) {
-	var machoDwarfFile *macho.File
-	var machoFile *macho.File
-	var endian string
-	var err error
+func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, error) {
 
-	if machoPath == "" && dwarfPath == "" {
-		return nil, fmt.Errorf("One or more inputs are required")
-	}
+	// if machoPath == "" && dwarfPath == "" {
+	// 	return nil, fmt.Errorf("One or more inputs are required")
+	// }
 
 	doc := newVtypeJson()
 
-	// Non-FAT processing
-	if !isFat {
-		if dwarfPath != "" {
-			machoDwarfFile, err = macho.Open(dwarfPath)
+	for _, f := range files {
+		var machoFile *macho.File
+		var err error
+
+		if !isFat {
+			machoFile, err = macho.Open(f.FilePath)
 			if err != nil {
-				return nil, fmt.Errorf("Could not open %s: %v", dwarfPath, err)
-			}
-			defer machoDwarfFile.Close()
-
-			doc.Metadata.SetFile(filepath.Base(dwarfPath))
-
-			if machoDwarfFile.ByteOrder == binary.LittleEndian {
-				endian = "little"
-			} else {
-				endian = "big"
-			}
-			data, err := machoDwarfFile.DWARF()
-			if err != nil {
-				return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
-			}
-
-			if err := doc.addDwarf(data, endian); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
-			}
-
-			if err := processMachoSymTab(doc, machoDwarfFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
-			}
-		}
-		if machoPath != "" {
-			machoFile, err = macho.Open(machoPath)
-			if err != nil {
-				return nil, fmt.Errorf("%s not valid Mach-O", dwarfPath)
+				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
 			}
 			defer machoFile.Close()
-
-			doc.Metadata.SetFile(filepath.Base(machoPath))
-
-			if err := processMachoSymTab(doc, machoFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+		} else {
+			fatFile, err := macho.OpenFat(f.FilePath)
+			if err != nil {
+				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
 			}
-			if err := addMachoConstantData(doc, machoFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+			defer fatFile.Close()
+
+			machoFile, err = findFatArch(fatFile, arch)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %v", f.FilePath, err)
 			}
 		}
-	} else {
-		if dwarfPath != "" {
-			fatDwarfFile, err := macho.OpenFat(dwarfPath)
-			if err != nil {
-				return nil, fmt.Errorf("Could not open %s: %v", dwarfPath, err)
-			}
-			defer fatDwarfFile.Close()
 
-			var cpu macho.Cpu
-			var found bool
+		// process dwarf
+		if what := f.Extract & (ExtractDwarfTypes | ExtractDwarfSymbols); what != 0 {
+			var endian string
+			doc.Metadata.SetFile(filepath.Base(f.FilePath))
 
-			// Convert user provided arch string to macho.Cpu
-			switch arch {
-			case "i386":
-				cpu = macho.Cpu386
-			case "x86_64":
-				cpu = macho.CpuAmd64
-			default:
-				return nil, fmt.Errorf("Unknown arch type %s. Supported types are i386 and x86_64", arch)
-			}
-
-			// Select the embedded dwarf file that matches the user architecture
-			for _, a := range fatDwarfFile.Arches {
-				if a.Cpu == cpu {
-					machoDwarfFile = a.File
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", dwarfPath, arch)
-			}
-
-			if machoDwarfFile.ByteOrder == binary.LittleEndian {
+			if machoFile.ByteOrder == binary.LittleEndian {
 				endian = "little"
 			} else {
 				endian = "big"
 			}
-			data, err := machoDwarfFile.DWARF()
+			data, err := machoFile.DWARF()
 			if err != nil {
-				return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
+				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
 			}
 
-			if err := doc.addDwarf(data, endian); err != nil {
+			if err := doc.addDwarf(data, endian, what); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 			}
-
-			if err := processMachoSymTab(doc, machoDwarfFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
-			}
 		}
-		if machoPath != "" {
-			fatMachoFile, err := macho.OpenFat(machoPath)
-			if err != nil {
-				return nil, fmt.Errorf("%s not valid Mach-O", machoPath)
-			}
-			defer fatMachoFile.Close()
 
-			doc.Metadata.SetFile(filepath.Base(dwarfPath))
-
-			var cpu macho.Cpu
-			var found bool
-
-			// Convert user provided arch string to macho.Cpu
-			switch arch {
-			case "i386":
-				cpu = macho.Cpu386
-			case "x86_64":
-				cpu = macho.CpuAmd64
-			default:
-				return nil, fmt.Errorf("Unknown arch type %s. Supported types are i386 and x86_64", arch)
-			}
-
-			// Select the embedded dwarf file that matches the user architecture
-			for _, a := range fatMachoFile.Arches {
-				if a.Cpu == cpu {
-					machoFile = a.File
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", machoPath, arch)
-			}
-
-			if err := processMachoSymTab(doc, machoFile); err != nil {
+		// process symtab
+		if what := f.Extract & (ExtractSymTabSymbols | ExtractConstantData); what != 0 {
+			if err := processMachoSymTab(doc, machoFile, what); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
-			}
-			if err := addMachoConstantData(doc, machoFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
 			}
 		}
 	}
+
+	// } else {
+	// 	if dwarfPaths != nil {
+	// 		dwarfPath := (*dwarfPaths)[0]
+	// 		fatDwarfFile, err := macho.OpenFat(dwarfPath)
+	// 		if err != nil {
+	// 			return nil, fmt.Errorf("Could not open %s: %v", dwarfPath, err)
+	// 		}
+	// 		defer fatDwarfFile.Close()
+
+	// 		var cpu macho.Cpu
+	// 		var found bool
+
+	// 		// Convert user provided arch string to macho.Cpu
+	// 		switch arch {
+	// 		case "i386":
+	// 			cpu = macho.Cpu386
+	// 		case "x86_64":
+	// 			cpu = macho.CpuAmd64
+	// 		default:
+	// 			return nil, fmt.Errorf("Unknown arch type %s. Supported types are i386 and x86_64", arch)
+	// 		}
+
+	// 		// Select the embedded dwarf file that matches the user architecture
+	// 		for _, a := range fatDwarfFile.Arches {
+	// 			if a.Cpu == cpu {
+	// 				machoDwarfFile = a.File
+	// 				found = true
+	// 				break
+	// 			}
+	// 		}
+
+	// 		if !found {
+	// 			return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", dwarfPath, arch)
+	// 		}
+
+	// 		if machoDwarfFile.ByteOrder == binary.LittleEndian {
+	// 			endian = "little"
+	// 		} else {
+	// 			endian = "big"
+	// 		}
+	// 		data, err := machoDwarfFile.DWARF()
+	// 		if err != nil {
+	// 			return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
+	// 		}
+
+	// 		if err := doc.addDwarf(data, endian); err != nil {
+	// 			fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
+	// 		}
+
+	// 		if err := processMachoSymTab(doc, machoDwarfFile); err != nil {
+	// 			fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+	// 		}
+	// 	}
+	// 	if machoPaths != nil {
+	// 		machoPath := (*machoPaths)[0]
+	// 		fatMachoFile, err := macho.OpenFat(machoPath)
+	// 		if err != nil {
+	// 			return nil, fmt.Errorf("%s not valid Mach-O", machoPath)
+	// 		}
+	// 		defer fatMachoFile.Close()
+
+	// 		doc.Metadata.SetFile(filepath.Base(machoPath))
+
+	// 		var cpu macho.Cpu
+	// 		var found bool
+
+	// 		// Convert user provided arch string to macho.Cpu
+	// 		switch arch {
+	// 		case "i386":
+	// 			cpu = macho.Cpu386
+	// 		case "x86_64":
+	// 			cpu = macho.CpuAmd64
+	// 		default:
+	// 			return nil, fmt.Errorf("Unknown arch type %s. Supported types are i386 and x86_64", arch)
+	// 		}
+
+	// 		// Select the embedded dwarf file that matches the user architecture
+	// 		for _, a := range fatMachoFile.Arches {
+	// 			if a.Cpu == cpu {
+	// 				machoFile = a.File
+	// 				found = true
+	// 				break
+	// 			}
+	// 		}
+
+	// 		if !found {
+	// 			return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", machoPath, arch)
+	// 		}
+
+	// 		if err := processMachoSymTab(doc, machoFile); err != nil {
+	// 			fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+	// 		}
+	// 		if err := addMachoConstantData(doc, machoFile); err != nil {
+	// 			fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+	// 		}
+	// 	}
+	// }
 
 	return doc, nil
 }
 
+func findFatArch(fatFile *macho.FatFile, arch string) (*macho.File, error) {
+	var cpu macho.Cpu
+
+	// Convert user provided arch string to macho.Cpu
+	switch arch {
+	case "i386":
+		cpu = macho.Cpu386
+	case "x86_64":
+		cpu = macho.CpuAmd64
+	default:
+		return nil, fmt.Errorf("Unknown arch type %s. Supported types are i386 and x86_64", arch)
+	}
+
+	// Select the embedded dwarf file that matches the user architecture
+	for _, a := range fatFile.Arches {
+		if a.Cpu == cpu {
+			return a.File, nil
+		}
+	}
+
+	return nil, fmt.Errorf("does not contain requested architecture %s", arch)
+}
+
 // processMachoSymTab adds missing symbol information from SymTab to the vtypeJson doc
-func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
+func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, what Extract) error {
 
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
@@ -732,6 +829,10 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 	if machoFile == nil {
 		return fmt.Errorf("Invalid machoFile: nil")
 	}
+
+	voidType := make(map[string]interface{}, 0)
+	voidType["kind"] = "base"
+	voidType["name"] = "void"
 
 	// Iterate over mach-O symbols in symtab. The symbols in symtab have an
 	// address and name, but do not have type information. We can use this
@@ -741,7 +842,6 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 	// symbols, we must check both the symbol name as it appears in symtab
 	// (with "_") and also attempt to strip the leading "_" and check for that
 	// symbol.
-
 	symtab := machoFile.Symtab
 	if symtab == nil {
 		return fmt.Errorf("Symtab command does not exist")
@@ -750,10 +850,6 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 	if machoSyms == nil {
 		return fmt.Errorf("Symtab does not have any symbols")
 	}
-
-	voidType := make(map[string]interface{}, 0)
-	voidType["kind"] = "base"
-	voidType["name"] = "void"
 
 	// Determine how the names from symtab map to those of the DWARF with
 	// respect to the presence or absence of the leading underscore
@@ -773,6 +869,12 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 	// should be stripped from processing
 	stripLeadingUnderscore := strippedUnderscoreMatchCount > exactMatchCount
 
+	// we convert the constantDataSymbols slice to a map for fast lookups
+	constantDataMap := make(map[string]bool)
+	for _, constantSymbol := range constantMacosDataSymbols {
+		constantDataMap[constantSymbol] = false
+	}
+
 	for _, machosym := range machoSyms {
 
 		symName := machosym.Name
@@ -781,18 +883,40 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 		}
 
 		sym, ok := doc.Symbols[symName]
+		// if symbol exists
 		if ok {
-			// check if symbol exists as is and its address is 0
-			if sym.Address == 0 {
+			// Update address
+			// TODO: Remove the address 0 check
+			if sym.Address == 0 && what&ExtractSymTabSymbols != 0 {
 				sym.Address = machosym.Value
-				doc.Symbols[symName] = sym
+			}
+
+			// Attempt to fill contant data
+			if what&ExtractConstantData != 0 {
+				func() {
+					if _, ok = constantDataMap[symName]; !ok {
+						return
+					}
+
+					dataLen, ok := sym.SymbolType["count"].(int64)
+					if !ok {
+						return
+					}
+					data, err := readMachoSymbol(machoFile, machosym, uint64(dataLen))
+					if err != nil {
+						return
+					}
+					sym.ConstantData = data
+				}()
 			}
 
 			doc.Symbols[symName] = sym
 		} else {
-			// else DWARF does not have this symbol so create a new symbol
-			newsym := vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
-			doc.Symbols[symName] = newsym
+			// else create a new symbol
+			if what&ExtractSymTabSymbols != 0 {
+				newsym := vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
+				doc.Symbols[symName] = newsym
+			}
 		}
 	}
 
@@ -905,7 +1029,7 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 		if err != nil {
 			return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
 		}
-		if err = doc.addDwarf(data, endian); err != nil {
+		if err = doc.addDwarf(data, endian, ExtractDwarfTypes); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 		}
 	}
