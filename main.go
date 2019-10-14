@@ -897,9 +897,8 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 		if err != nil {
 			return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
 		}
-		err = doc.addDwarf(data, endian)
-		if err != nil {
-			return nil, err
+		if err = doc.addDwarf(data, endian); err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 		}
 	}
 	if elfPath != "" {
@@ -909,40 +908,56 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 		}
 		defer elfFile.Close()
 
-		// we convert the constantDataSymbols slice to a map for fast lookups
-		constantDataMap := make(map[string]bool)
-		for _, constantSymbol := range constantLinuxDataSymbols {
-			constantDataMap[constantSymbol] = false
+		if err = processElfSymTab(doc, elfFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing symtab of %s: %v\n", elfPath, err)
 		}
 
-		// go through the ELF symbols looking for missing addresses
-		elfsymbols, err := elfFile.Symbols()
-		if err != nil {
-			return nil, fmt.Errorf("Could not get symbols from %s: %v", elfPath, err)
-		}
-
-		voidType := make(map[string]interface{}, 0)
-		voidType["kind"] = "base"
-		voidType["name"] = "void"
-
-		for _, elfsym := range elfsymbols {
-			var data []byte
-
-			_, ok := constantDataMap[elfsym.Name]
-			if ok {
-				data, _ = readELFSymbol(elfFile, elfsym)
-			}
-
-			sym, ok := doc.Symbols[elfsym.Name]
-			if ok && sym.Address == 0 {
-				sym.Address = elfsym.Value
-				sym.ConstantData = data
-				doc.Symbols[elfsym.Name] = sym
-			} else {
-				newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
-				doc.Symbols[elfsym.Name] = newsym
-			}
-		}
 	}
 	return doc, nil
+}
+
+// processElfSymTab adds missing symbol information from SymTab to the vtypeJson doc
+func processElfSymTab(doc *vtypeJson, elfFile *elf.File) error {
+	if doc == nil {
+		return fmt.Errorf("Invalid vtypeJSON: nil")
+	}
+	if elfFile == nil {
+		return fmt.Errorf("Invalid elfFile: nil")
+	}
+
+	// we convert the constantDataSymbols slice to a map for fast lookups
+	constantDataMap := make(map[string]bool)
+	for _, constantSymbol := range constantLinuxDataSymbols {
+		constantDataMap[constantSymbol] = false
+	}
+
+	// go through the ELF symbols looking for missing addresses
+	elfsymbols, err := elfFile.Symbols()
+	if err != nil {
+		return fmt.Errorf("could not get symbols: %v", err)
+	}
+
+	voidType := make(map[string]interface{}, 0)
+	voidType["kind"] = "base"
+	voidType["name"] = "void"
+
+	for _, elfsym := range elfsymbols {
+		var data []byte
+
+		_, ok := constantDataMap[elfsym.Name]
+		if ok {
+			data, _ = readELFSymbol(elfFile, elfsym)
+		}
+
+		sym, ok := doc.Symbols[elfsym.Name]
+		if ok && sym.Address == 0 {
+			sym.Address = elfsym.Value
+			sym.ConstantData = data
+			doc.Symbols[elfsym.Name] = sym
+		} else {
+			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
+			doc.Symbols[elfsym.Name] = newsym
+		}
+	}
+	return nil
 }
