@@ -601,7 +601,7 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 			}
 
-			if err := processSymTab(doc, machoDwarfFile); err != nil {
+			if err := processMachoSymTab(doc, machoDwarfFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
 			}
 		}
@@ -614,10 +614,10 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 
 			doc.Metadata.SetFile(filepath.Base(machoPath))
 
-			if err := processSymTab(doc, machoFile); err != nil {
+			if err := processMachoSymTab(doc, machoFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
 			}
-			if err := addConstantData(doc, machoFile); err != nil {
+			if err := addMachoConstantData(doc, machoFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
 			}
 		}
@@ -669,7 +669,7 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 			}
 
-			if err := processSymTab(doc, machoDwarfFile); err != nil {
+			if err := processMachoSymTab(doc, machoDwarfFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
 			}
 		}
@@ -708,10 +708,10 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 				return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", machoPath, arch)
 			}
 
-			if err := processSymTab(doc, machoFile); err != nil {
+			if err := processMachoSymTab(doc, machoFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
 			}
-			if err := addConstantData(doc, machoFile); err != nil {
+			if err := addMachoConstantData(doc, machoFile); err != nil {
 				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
 			}
 		}
@@ -720,8 +720,8 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 	return doc, nil
 }
 
-// processSymTab adds missing symbol information from SymTab to the vtypeJson doc
-func processSymTab(doc *vtypeJson, machoFile *macho.File) error {
+// processMachoSymTab adds missing symbol information from SymTab to the vtypeJson doc
+func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
@@ -796,8 +796,8 @@ func processSymTab(doc *vtypeJson, machoFile *macho.File) error {
 	return nil
 }
 
-// addConstantData adds constanta data values to the requested symbols
-func addConstantData(doc *vtypeJson, machoFile *macho.File) error {
+// addMachoConstantData adds constanta data values to the requested symbols
+func addMachoConstantData(doc *vtypeJson, machoFile *macho.File) error {
 	if machoFile == nil {
 		return fmt.Errorf("Invalid machoFile: nil")
 	}
