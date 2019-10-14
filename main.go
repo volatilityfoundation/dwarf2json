@@ -798,6 +798,11 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File) error {
 
 // addMachoConstantData adds constanta data values to the requested symbols
 func addMachoConstantData(doc *vtypeJson, machoFile *macho.File) error {
+
+	if doc == nil {
+		return fmt.Errorf("Invalid vtypeJSON: nil")
+	}
+
 	if machoFile == nil {
 		return fmt.Errorf("Invalid machoFile: nil")
 	}
