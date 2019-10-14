@@ -912,6 +912,10 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 			fmt.Fprintf(os.Stderr, "Error processing symtab of %s: %v\n", elfPath, err)
 		}
 
+		if err := addElfConstantData(doc, elfFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+		}
+
 	}
 	return doc, nil
 }
@@ -921,6 +925,41 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File) error {
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
 	}
+	if elfFile == nil {
+		return fmt.Errorf("Invalid elfFile: nil")
+	}
+
+	// go through the ELF symbols looking for missing addresses
+	elfsymbols, err := elfFile.Symbols()
+	if err != nil {
+		return fmt.Errorf("could not get symbols: %v", err)
+	}
+
+	voidType := make(map[string]interface{}, 0)
+	voidType["kind"] = "base"
+	voidType["name"] = "void"
+
+	for _, elfsym := range elfsymbols {
+
+		sym, ok := doc.Symbols[elfsym.Name]
+		if ok && sym.Address == 0 {
+			sym.Address = elfsym.Value
+			doc.Symbols[elfsym.Name] = sym
+		} else {
+			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
+			doc.Symbols[elfsym.Name] = newsym
+		}
+	}
+	return nil
+}
+
+// addElfConstantData adds constanta data values to the requested symbols
+func addElfConstantData(doc *vtypeJson, elfFile *elf.File) error {
+
+	if doc == nil {
+		return fmt.Errorf("Invalid vtypeJSON: nil")
+	}
+
 	if elfFile == nil {
 		return fmt.Errorf("Invalid elfFile: nil")
 	}
@@ -937,26 +976,17 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File) error {
 		return fmt.Errorf("could not get symbols: %v", err)
 	}
 
-	voidType := make(map[string]interface{}, 0)
-	voidType["kind"] = "base"
-	voidType["name"] = "void"
-
 	for _, elfsym := range elfsymbols {
 		var data []byte
 
-		_, ok := constantDataMap[elfsym.Name]
-		if ok {
-			data, _ = readELFSymbol(elfFile, elfsym)
-		}
-
 		sym, ok := doc.Symbols[elfsym.Name]
-		if ok && sym.Address == 0 {
-			sym.Address = elfsym.Value
+		if !ok {
+			continue
+		}
+		if _, ok = constantDataMap[elfsym.Name]; ok {
+			data, _ = readELFSymbol(elfFile, elfsym)
 			sym.ConstantData = data
 			doc.Symbols[elfsym.Name] = sym
-		} else {
-			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
-			doc.Symbols[elfsym.Name] = newsym
 		}
 	}
 	return nil
