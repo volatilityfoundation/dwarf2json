@@ -42,10 +42,10 @@ type Extract int
 
 // Defines information to extract during processing steps
 const (
-	ExtractDwarfSymbols  Extract = 1
-	ExtractDwarfTypes    Extract = 2
-	ExtractSymTabSymbols Extract = 4
-	ExtractConstantData  Extract = 8
+	DwarfSymbols  Extract = 1
+	DwarfTypes    Extract = 2
+	SymTabSymbols Extract = 4
+	ConstantData  Extract = 8
 )
 
 // FileToProcess defines the file that needs to be processed and
@@ -158,7 +158,7 @@ type vtypeJson struct {
 	Symbols   map[string]vtypeSymbol   `json:"symbols"`
 }
 
-func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) error {
+func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract) error {
 
 	doc.BaseTypes["void"] = vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
@@ -178,7 +178,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) er
 		case dwarf.TagUnionType:
 			fallthrough
 		case dwarf.TagStructType:
-			if what&ExtractDwarfTypes == 0 {
+			if extract&DwarfTypes == 0 {
 				continue
 			}
 			genericType, err := data.Type(entry.Offset)
@@ -228,7 +228,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) er
 			name := struct_name(structType)
 			doc.UserTypes[name] = st
 		case dwarf.TagEnumerationType:
-			if what&ExtractDwarfTypes == 0 {
+			if extract&DwarfTypes == 0 {
 				continue
 			}
 			genericType, err := data.Type(entry.Offset)
@@ -277,7 +277,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) er
 
 			doc.Enums[enum_name(enumType)] = et
 		case dwarf.TagVariable:
-			if what&ExtractDwarfSymbols == 0 {
+			if extract&DwarfSymbols == 0 {
 				continue
 			}
 			name, _ := entry.Val(dwarf.AttrName).(string)
@@ -313,7 +313,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) er
 			}
 			doc.Symbols[name] = sym
 		case dwarf.TagPointerType:
-			if what&ExtractDwarfTypes == 0 {
+			if extract&DwarfTypes == 0 {
 				continue
 			}
 			if _, present := doc.BaseTypes["pointer"]; !present {
@@ -325,7 +325,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, what Extract) er
 					vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
 			}
 		case dwarf.TagBaseType:
-			if what&ExtractDwarfTypes == 0 {
+			if extract&DwarfTypes == 0 {
 				continue
 			}
 			genericType, err := data.Type(entry.Offset)
@@ -588,18 +588,18 @@ Commands:
 		var filesToProcess FilesToProcess
 		// Type and Symbols
 		for _, filePath := range *machoPaths {
-			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractSymTabSymbols | ExtractDwarfSymbols | ExtractDwarfTypes | ExtractConstantData})
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
 		}
 
 		// Type only
 		for _, filePath := range *machoTypePaths {
-			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractDwarfTypes})
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfTypes})
 		}
 
 		//Symbol only
 		for _, filePath := range *machoSymbolPaths {
-			// filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractDwarfSymbols | ExtractSymTabSymbols | ExtractConstantData})
-			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: ExtractSymTabSymbols | ExtractConstantData})
+			// filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfSymbols | SymTabSymbols | ConstantData})
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | ConstantData})
 		}
 
 		doc, err = generateMac(filesToProcess, *arch, *isFat)
@@ -669,7 +669,7 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 		}
 
 		// process dwarf
-		if what := f.Extract & (ExtractDwarfTypes | ExtractDwarfSymbols); what != 0 {
+		if extract := f.Extract & (DwarfTypes | DwarfSymbols); extract != 0 {
 			var endian string
 			doc.Metadata.SetFile(filepath.Base(f.FilePath))
 
@@ -683,14 +683,14 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
 			}
 
-			if err := doc.addDwarf(data, endian, what); err != nil {
+			if err := doc.addDwarf(data, endian, extract); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 			}
 		}
 
 		// process symtab
-		if what := f.Extract & (ExtractSymTabSymbols | ExtractConstantData); what != 0 {
-			if err := processMachoSymTab(doc, machoFile, what); err != nil {
+		if extract := f.Extract & (SymTabSymbols | ConstantData); extract != 0 {
+			if err := processMachoSymTab(doc, machoFile, extract); err != nil {
 				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
 			}
 		}
@@ -821,7 +821,7 @@ func findFatArch(fatFile *macho.FatFile, arch string) (*macho.File, error) {
 }
 
 // processMachoSymTab adds missing symbol information from SymTab to the vtypeJson doc
-func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, what Extract) error {
+func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) error {
 
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
@@ -887,12 +887,12 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, what Extract) err
 		if ok {
 			// Update address
 			// TODO: Remove the address 0 check
-			if sym.Address == 0 && what&ExtractSymTabSymbols != 0 {
+			if sym.Address == 0 && extract&SymTabSymbols != 0 {
 				sym.Address = machosym.Value
 			}
 
 			// Attempt to fill contant data
-			if what&ExtractConstantData != 0 {
+			if extract&ConstantData != 0 {
 				func() {
 					if _, ok = constantDataMap[symName]; !ok {
 						return
@@ -913,7 +913,7 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, what Extract) err
 			doc.Symbols[symName] = sym
 		} else {
 			// else create a new symbol
-			if what&ExtractSymTabSymbols != 0 {
+			if extract&SymTabSymbols != 0 {
 				newsym := vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
 				doc.Symbols[symName] = newsym
 			}
@@ -1029,7 +1029,7 @@ func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vty
 		if err != nil {
 			return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
 		}
-		if err = doc.addDwarf(data, endian, ExtractDwarfTypes); err != nil {
+		if err = doc.addDwarf(data, endian, DwarfTypes); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
 		}
 	}
