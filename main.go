@@ -133,10 +133,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string) error {
 		}
 
 		if err != nil {
-			if err != nil {
-				fmt.Printf("%v\n", err)
-				os.Exit(255)
-			}
+			return err
 		}
 		switch entry.Tag {
 		case dwarf.TagUnionType:
@@ -600,21 +597,30 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 				return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
 			}
 
-			doc.addDwarf(data, endian)
+			if err := doc.addDwarf(data, endian); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
+			}
+
+			if err := processSymTab(doc, machoDwarfFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+			}
 		}
 		if machoPath != "" {
 			machoFile, err = macho.Open(machoPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "%s not valid Mach-O\n", dwarfPath)
-				os.Exit(255)
+				return nil, fmt.Errorf("%s not valid Mach-O", dwarfPath)
 			}
 			defer machoFile.Close()
 
 			doc.Metadata.SetFile(filepath.Base(machoPath))
 
+			if err := processSymTab(doc, machoFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+			}
+			if err := addConstantData(doc, machoFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+			}
 		}
-		// TODO: consider handling error
-		processSymTab(doc, machoDwarfFile, machoFile)
 	} else {
 		if dwarfPath != "" {
 			fatDwarfFile, err := macho.OpenFat(dwarfPath)
@@ -659,13 +665,18 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 				return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
 			}
 
-			doc.addDwarf(data, endian)
+			if err := doc.addDwarf(data, endian); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
+			}
+
+			if err := processSymTab(doc, machoDwarfFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+			}
 		}
 		if machoPath != "" {
 			fatMachoFile, err := macho.OpenFat(machoPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "%s not valid Mach-O\n", machoPath)
-				os.Exit(255)
+				return nil, fmt.Errorf("%s not valid Mach-O", machoPath)
 			}
 			defer fatMachoFile.Close()
 
@@ -696,23 +707,29 @@ func generateMac(machoPath string, dwarfPath string, arch string, isFat bool) (*
 			if !found {
 				return nil, fmt.Errorf("%s is in universal FAT format, but does not contain requested architecture %s", machoPath, arch)
 			}
+
+			if err := processSymTab(doc, machoFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+			}
+			if err := addConstantData(doc, machoFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+			}
 		}
-		// TODO: consider handling error
-		processSymTab(doc, machoDwarfFile, machoFile)
 	}
 
 	return doc, nil
 }
 
 // processSymTab adds missing symbol information from SymTab to the vtypeJson doc
-func processSymTab(doc *vtypeJson, dwarfFile *macho.File, machoFile *macho.File) error {
+func processSymTab(doc *vtypeJson, machoFile *macho.File) error {
 
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
 	}
-	if dwarfFile == nil {
-		return fmt.Errorf("Invalid dwarf: nil")
+	if machoFile == nil {
+		return fmt.Errorf("Invalid machoFile: nil")
 	}
+
 	// Iterate over mach-O symbols in symtab. The symbols in symtab have an
 	// address and name, but do not have type information. We can use this
 	// symtab to fill in the missing addresses for symbols from DWARF.
@@ -722,19 +739,13 @@ func processSymTab(doc *vtypeJson, dwarfFile *macho.File, machoFile *macho.File)
 	// (with "_") and also attempt to strip the leading "_" and check for that
 	// symbol.
 
-	// we convert the constantDataSymbols slice to a map for fast lookups
-	constantDataMap := make(map[string]bool)
-	for _, constantSymbol := range constantMacosDataSymbols {
-		constantDataMap[constantSymbol] = false
-	}
-
-	symtab := dwarfFile.Symtab
+	symtab := machoFile.Symtab
 	if symtab == nil {
 		return fmt.Errorf("Symtab command does not exist")
 	}
 	machoSyms := symtab.Syms
 	if machoSyms == nil {
-		fmt.Errorf("Symtab does not have any symbols")
+		return fmt.Errorf("Symtab does not have any symbols")
 	}
 
 	voidType := make(map[string]interface{}, 0)
@@ -757,7 +768,7 @@ func processSymTab(doc *vtypeJson, dwarfFile *macho.File, machoFile *macho.File)
 
 	// If more stripped-underscore-symbols match, then the underscore
 	// should be stripped from processing
-	stripLeadingUnderscore = strippedUnderscoreMatchCount > exactMatchCount
+	stripLeadingUnderscore := strippedUnderscoreMatchCount > exactMatchCount
 
 	for _, machosym := range machoSyms {
 
@@ -774,23 +785,6 @@ func processSymTab(doc *vtypeJson, dwarfFile *macho.File, machoFile *macho.File)
 				doc.Symbols[symName] = sym
 			}
 
-			// Try to read constant data if macho file is available
-			if machoFile != nil {
-				_, ok := constantDataMap[symName]
-				if !ok {
-					continue
-				}
-				dataLen, ok := sym.SymbolType["count"].(int64)
-				if !ok {
-					continue
-				}
-				data, err := readMachoSymbol(machoFile, machosym, uint64(dataLen))
-				if err != nil {
-					continue
-				}
-				sym.ConstantData = data
-			}
-
 			doc.Symbols[symName] = sym
 		} else {
 			// else DWARF does not have this symbol so create a new symbol
@@ -799,6 +793,76 @@ func processSymTab(doc *vtypeJson, dwarfFile *macho.File, machoFile *macho.File)
 		}
 	}
 
+	return nil
+}
+
+// addConstantData adds constanta data values to the requested symbols
+func addConstantData(doc *vtypeJson, machoFile *macho.File) error {
+	if machoFile == nil {
+		return fmt.Errorf("Invalid machoFile: nil")
+	}
+
+	symtab := machoFile.Symtab
+	if symtab == nil {
+		return fmt.Errorf("Symtab command does not exist")
+	}
+	machoSyms := symtab.Syms
+	if machoSyms == nil {
+		return fmt.Errorf("Symtab does not have any symbols")
+	}
+
+	// Determine how the names from symtab map to those of the DWARF with
+	// respect to the presence or absence of the leading underscore
+	exactMatchCount := 0
+	strippedUnderscoreMatchCount := 0
+	for _, machosym := range machoSyms {
+		strippedName := strings.TrimPrefix(machosym.Name, "_")
+		if _, ok := doc.Symbols[machosym.Name]; ok {
+			exactMatchCount++
+		}
+		if _, ok := doc.Symbols[strippedName]; ok {
+			strippedUnderscoreMatchCount++
+		}
+	}
+
+	// If more stripped-underscore-symbols match, then the underscore
+	// should be stripped from processing
+	stripLeadingUnderscore := strippedUnderscoreMatchCount > exactMatchCount
+
+	// we convert the constantDataSymbols slice to a map for fast lookups
+	constantDataMap := make(map[string]bool)
+	for _, constantSymbol := range constantMacosDataSymbols {
+		constantDataMap[constantSymbol] = false
+	}
+
+	for _, machosym := range machoSyms {
+
+		symName := machosym.Name
+		if stripLeadingUnderscore {
+			symName = strings.TrimPrefix(symName, "_")
+		}
+
+		sym, ok := doc.Symbols[symName]
+		if !ok {
+			continue
+		}
+
+		if _, ok = constantDataMap[symName]; !ok {
+			continue
+		}
+
+		dataLen, ok := sym.SymbolType["count"].(int64)
+		if !ok {
+			continue
+		}
+		data, err := readMachoSymbol(machoFile, machosym, uint64(dataLen))
+		if err != nil {
+			continue
+		}
+		sym.ConstantData = data
+
+		doc.Symbols[symName] = sym
+	}
 	return nil
 }
 
