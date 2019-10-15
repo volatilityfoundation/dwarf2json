@@ -143,24 +143,24 @@ type vtypeSymbol struct {
 func newVtypeJson() *vtypeJson {
 	return &vtypeJson{
 		Metadata:  newVtypeMetadata(),
-		BaseTypes: make(map[string]vtypeBaseType),
-		UserTypes: make(map[string]vtypeStruct),
-		Enums:     make(map[string]vtypeEnum),
-		Symbols:   make(map[string]vtypeSymbol),
+		BaseTypes: make(map[string]*vtypeBaseType),
+		UserTypes: make(map[string]*vtypeStruct),
+		Enums:     make(map[string]*vtypeEnum),
+		Symbols:   make(map[string]*vtypeSymbol),
 	}
 }
 
 type vtypeJson struct {
-	Metadata  *vtypeMetadata           `json:"metadata"`
-	BaseTypes map[string]vtypeBaseType `json:"base_types"`
-	UserTypes map[string]vtypeStruct   `json:"user_types"`
-	Enums     map[string]vtypeEnum     `json:"enums"`
-	Symbols   map[string]vtypeSymbol   `json:"symbols"`
+	Metadata  *vtypeMetadata            `json:"metadata"`
+	BaseTypes map[string]*vtypeBaseType `json:"base_types"`
+	UserTypes map[string]*vtypeStruct   `json:"user_types"`
+	Enums     map[string]*vtypeEnum     `json:"enums"`
+	Symbols   map[string]*vtypeSymbol   `json:"symbols"`
 }
 
 func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract) error {
 
-	doc.BaseTypes["void"] = vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
+	doc.BaseTypes["void"] = &vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
 	symbolsCb := func(entry *dwarf.Entry, addressSize int) error {
 		switch entry.Tag {
@@ -186,7 +186,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			} else {
 				address = locationToUint64(loc, addressSize)
 			}
-			sym := vtypeSymbol{Address: address}
+			sym := &vtypeSymbol{Address: address}
 			genericType, err := data.Type(typOff)
 			if err == nil {
 				sym.SymbolType = typeName(genericType)
@@ -219,7 +219,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				break
 			}
 			st :=
-				vtypeStruct{
+				&vtypeStruct{
 					Size:   structType.Size(),
 					Fields: make(map[string]vtypeStructField),
 					Kind:   structType.Kind,
@@ -261,7 +261,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				return fmt.Errorf("%s is not an EnumType?", genericType.String())
 			}
 			et :=
-				vtypeEnum{
+				&vtypeEnum{
 					Size:      enumType.ByteSize,
 					Base:      "void", // replaced below, if match found
 					Constants: make(map[string]int64, 0),
@@ -280,7 +280,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 
 			// Sort keys to make map enum type selection deterministic
-			keys := make([]string, len(doc.BaseTypes))
+			keys := make([]string, 0, len(doc.BaseTypes))
 			for k := range doc.BaseTypes {
 				keys = append(keys, k)
 			}
@@ -302,7 +302,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 					break
 				}
 				doc.BaseTypes["pointer"] =
-					vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
+					&vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
 			}
 		case dwarf.TagBaseType:
 			genericType, err := data.Type(entry.Offset)
@@ -462,7 +462,7 @@ func typeName(dwarfType dwarf.Type) map[string]interface{} {
 	return result
 }
 
-func newBasetype(dwarfType dwarf.Type, endian string) vtypeBaseType {
+func newBasetype(dwarfType dwarf.Type, endian string) *vtypeBaseType {
 	signed := true
 	kind := "int"
 
@@ -481,7 +481,7 @@ func newBasetype(dwarfType dwarf.Type, endian string) vtypeBaseType {
 	}
 
 	bt :=
-		vtypeBaseType{
+		&vtypeBaseType{
 			Size:   dwarfType.Size(),
 			Signed: signed,
 			Kind:   kind,
@@ -826,8 +826,8 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 		symName := normalizeName(machosym.Name)
 		sym, ok := doc.Symbols[symName]
 		if !ok {
-			sym = vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
-		} else if sym.Address == 0 {
+			sym = &vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
+		} else {
 			sym.Address = machosym.Value
 		}
 		doc.Symbols[symName] = sym
@@ -953,13 +953,12 @@ func processSystemMap(doc *vtypeJson, systemMap io.Reader) error {
 		symName := words[2]
 
 		sym, ok := doc.Symbols[symName]
-		if ok && sym.Address == 0 {
-			sym.Address = addr
-			doc.Symbols[symName] = sym
+		if !ok {
+			sym = &vtypeSymbol{Address: addr, SymbolType: voidType}
 		} else {
-			newsym := vtypeSymbol{Address: addr, SymbolType: voidType}
-			doc.Symbols[symName] = newsym
+			sym.Address = addr
 		}
+		doc.Symbols[symName] = sym
 	}
 	return nil
 }
@@ -991,10 +990,10 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error 
 
 	symbolsCb := func(elfsym elf.Symbol) {
 		sym, ok := doc.Symbols[elfsym.Name]
-		if ok && sym.Address == 0 {
-			sym.Address = elfsym.Value
+		if !ok {
+			sym = &vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
 		} else {
-			sym = vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
+			sym.Address = elfsym.Value
 		}
 		doc.Symbols[elfsym.Name] = sym
 	}
