@@ -560,11 +560,10 @@ Commands:
 
 	// mac subcommand setup
 	macArgs := pflag.NewFlagSet("mac", pflag.ExitOnError)
-	isFat := macArgs.Bool("fat", false, "universal FAT binary (default: false)")
-	arch := macArgs.String("arch", "x86_64", "architecture for universal FAT files {i386|x86_64} (Optional)")
-	machoSymbolPaths := macArgs.StringArray("macho-symbols", nil, "Mach-O files to extract symbol information (Optional)")
-	machoTypePaths := macArgs.StringArray("macho-types", nil, "files to extract type information (Optional)")
-	machoPaths := macArgs.StringArray("macho", nil, "files to extract symbol and type information (Optional)")
+	fatArch := macArgs.String("arch", "", "architecture for universal FAT files. `NAME` is one of {i386|x86_64}")
+	machoSymbolPaths := macArgs.StringArray("macho-symbols", nil, "Mach-O file `PATH` to extract only symbol information")
+	machoTypePaths := macArgs.StringArray("macho-types", nil, "Mach-O file `PATH` to extract only type information")
+	machoPaths := macArgs.StringArray("macho", nil, "Mach-O file `PATH` to extract symbol and type information")
 	macArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s mac [OPTIONS]\n\n", TOOL_NAME)
 		macArgs.PrintDefaults()
@@ -572,10 +571,10 @@ Commands:
 
 	// linux subcommand setup
 	linuxArgs := pflag.NewFlagSet("linux", pflag.ExitOnError)
-	elfPaths := linuxArgs.StringArray("elf", nil, "files to extract symbol and type informaton (Optional)")
-	systemMapPaths := linuxArgs.StringArray("system-map", nil, "system.map file to process (Optional)")
-	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "files to extract type informaton (Optional)")
-	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "files to extract symbol informaton (Optional)")
+	elfPaths := linuxArgs.StringArray("elf", nil, "ELF file `PATH` to extract symbol and type information")
+	systemMapPaths := linuxArgs.StringArray("system-map", nil, "System.Map file `PATH` to extract symbol information")
+	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "ELF file `PATH` to extract only type information")
+	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "ELF file `PATH` to extract only symbol information")
 	linuxArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
 		linuxArgs.PrintDefaults()
@@ -611,7 +610,13 @@ Commands:
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | ConstantData})
 		}
 
-		doc, err = generateMac(filesToProcess, *arch, *isFat)
+		if len(filesToProcess) == 0 {
+			fmt.Fprintf(os.Stderr, "No files specified\n")
+			macArgs.Usage()
+			os.Exit(1)
+		}
+
+		doc, err = generateMac(filesToProcess, *fatArch)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed mac processing: %v\n", err)
 			os.Exit(1)
@@ -638,6 +643,12 @@ Commands:
 
 		for _, filePath := range *systemMapPaths {
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SystemMap})
+		}
+
+		if len(filesToProcess) == 0 {
+			fmt.Fprintf(os.Stderr, "No files specified\n")
+			linuxArgs.Usage()
+			os.Exit(1)
 		}
 
 		doc, err = generateLinux(filesToProcess)
@@ -668,7 +679,7 @@ Commands:
 	os.Stdout.Write(b)
 }
 
-func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, error) {
+func generateMac(files FilesToProcess, fatArch string) (*vtypeJson, error) {
 
 	doc := newVtypeJson()
 
@@ -676,7 +687,7 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 		var machoFile *macho.File
 		var err error
 
-		if !isFat {
+		if fatArch == "" {
 			machoFile, err = macho.Open(f.FilePath)
 			if err != nil {
 				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
@@ -689,7 +700,7 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 			}
 			defer fatFile.Close()
 
-			machoFile, err = findFatArch(fatFile, arch)
+			machoFile, err = findFatArch(fatFile, fatArch)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %v", f.FilePath, err)
 			}
