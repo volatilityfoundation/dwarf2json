@@ -960,29 +960,43 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error 
 	voidType["kind"] = "base"
 	voidType["name"] = "void"
 
+	symbolsCb := func(elfsym elf.Symbol) {
+		sym, ok := doc.Symbols[elfsym.Name]
+		if ok && sym.Address == 0 {
+			sym.Address = elfsym.Value
+		} else {
+			sym = vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
+		}
+		doc.Symbols[elfsym.Name] = sym
+	}
+
+	constantDataCb := func(elfsym elf.Symbol) {
+		_, ok := constantDataMap[elfsym.Name]
+		if !ok {
+			return
+		}
+		sym, ok := doc.Symbols[elfsym.Name]
+		if !ok {
+			return
+		}
+		data, _ := readELFSymbol(elfFile, elfsym)
+		sym.ConstantData = data
+		doc.Symbols[elfsym.Name] = sym
+	}
+
+	callBacks := []func(elfsym elf.Symbol){}
+
+	if extract&SymTabSymbols != 0 {
+		callBacks = append(callBacks, symbolsCb)
+	}
+	if extract&ConstantData != 0 {
+		callBacks = append(callBacks, constantDataCb)
+	}
+
 	for _, elfsym := range elfsymbols {
 
-		sym, ok := doc.Symbols[elfsym.Name]
-
-		var data []byte
-		if extract&ConstantData != 0 {
-			_, ok := constantDataMap[elfsym.Name]
-			if ok {
-				data, _ = readELFSymbol(elfFile, elfsym)
-			}
-		}
-
-		if ok && sym.Address == 0 {
-			if extract&SymTabSymbols != 0 {
-				sym.Address = elfsym.Value
-			}
-			sym.ConstantData = data
-			doc.Symbols[elfsym.Name] = sym
-		} else {
-			if extract&SymTabSymbols != 0 {
-				newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
-				doc.Symbols[elfsym.Name] = newsym
-			}
+		for _, cb := range callBacks {
+			cb(elfsym)
 		}
 	}
 	return nil
