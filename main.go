@@ -187,9 +187,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 			structType, ok := genericType.(*dwarf.StructType)
 			if ok != true {
-				// TODO: convert to error
-				fmt.Printf("%s is not a StructType?\n", genericType.String())
-				break
+				return fmt.Errorf("%s is not a StructType?", genericType.String())
 			}
 			if structType.Incomplete == true {
 				break
@@ -237,9 +235,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 			enumType, ok := genericType.(*dwarf.EnumType)
 			if ok != true {
-				// TODO: convert to error
-				fmt.Printf("%s is not an EnumType?\n", genericType.String())
-				break
+				return fmt.Errorf("%s is not an EnumType?", genericType.String())
 			}
 			et :=
 				vtypeEnum{
@@ -345,11 +341,11 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 // For now we only support addresses...
 func compute_dwarf_expr(buf []byte, addressSize int) (uint64, error) {
 	if len(buf) < 5 {
-		return 0, errors.New(fmt.Sprintf("Not enough data to compute expression (%d bytes)", len(buf)))
+		return 0, fmt.Errorf("not enough data to compute expression (%d bytes)", len(buf))
 	}
 
 	if buf[0] != DW_OP_addr {
-		return 0, errors.New(fmt.Sprintf("Unsupported DWARF opcode 0x%x", buf[0]))
+		return 0, fmt.Errorf("unsupported DWARF opcode 0x%x", buf[0])
 	}
 
 	var retval uint64
@@ -372,7 +368,7 @@ func compute_dwarf_expr(buf []byte, addressSize int) (uint64, error) {
 }
 
 func uint64_of_location(loc *dwarf.Field, addressSize int) uint64 {
-	result := uint64(0)
+	var result uint64
 
 	switch loc.Class {
 	default:
@@ -675,13 +671,13 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 		if !isFat {
 			machoFile, err = macho.Open(f.FilePath)
 			if err != nil {
-				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
+				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 			}
 			defer machoFile.Close()
 		} else {
 			fatFile, err := macho.OpenFat(f.FilePath)
 			if err != nil {
-				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
+				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 			}
 			defer fatFile.Close()
 
@@ -703,18 +699,18 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 			}
 			data, err := machoFile.DWARF()
 			if err != nil {
-				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
+				return nil, fmt.Errorf("could not get DWARF from %s: %v", f.FilePath, err)
 			}
 
 			if err = doc.addDwarf(data, endian, extract); err != nil {
-				return nil, fmt.Errorf("Error processing DWARF: %v", err)
+				return nil, fmt.Errorf("error processing DWARF: %v", err)
 			}
 		}
 
 		// process symtab
 		if extract := f.Extract & (SymTabSymbols | ConstantData); extract != 0 {
 			if err := processMachoSymTab(doc, machoFile, extract); err != nil {
-				return nil, fmt.Errorf("Error processing symtab: %v", err)
+				return nil, fmt.Errorf("error processing symtab: %v", err)
 			}
 		}
 	}
@@ -749,10 +745,10 @@ func findFatArch(fatFile *macho.FatFile, arch string) (*macho.File, error) {
 func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) error {
 
 	if doc == nil {
-		return fmt.Errorf("Invalid vtypeJSON: nil")
+		return fmt.Errorf("invalid vtypeJSON: nil")
 	}
 	if machoFile == nil {
-		return fmt.Errorf("Invalid machoFile: nil")
+		return fmt.Errorf("invalid machoFile: nil")
 	}
 
 	voidType := make(map[string]interface{}, 0)
@@ -769,11 +765,11 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 	// symbol.
 	symtab := machoFile.Symtab
 	if symtab == nil {
-		return fmt.Errorf("Symtab command does not exist")
+		return fmt.Errorf("symtab command does not exist")
 	}
 	machoSyms := symtab.Syms
 	if machoSyms == nil {
-		return fmt.Errorf("Symtab does not have any symbols")
+		return fmt.Errorf("symtab does not have any symbols")
 	}
 
 	// Determine how the names from symtab map to those of the DWARF with
@@ -860,11 +856,11 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 		if extract := f.Extract & (SystemMap); extract != 0 {
 			r, err := os.Open(f.FilePath)
 			if err != nil {
-				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
+				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 			}
 
 			if err := processSystemMap(doc, r); err != nil {
-				return nil, fmt.Errorf("Error processing system map: %v", err)
+				return nil, fmt.Errorf("error processing system map: %v", err)
 			}
 			continue
 		}
@@ -872,7 +868,7 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 		// process binary elf files
 		elfFile, err = elf.Open(f.FilePath)
 		if err != nil {
-			return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
+			return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 		}
 		defer elfFile.Close()
 
@@ -889,18 +885,18 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 
 			data, err := elfFile.DWARF()
 			if err != nil {
-				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
+				return nil, fmt.Errorf("could not get DWARF from %s: %v", f.FilePath, err)
 			}
 
 			if err = doc.addDwarf(data, endian, extract); err != nil {
-				return nil, fmt.Errorf("Error processing DWARF: %v", err)
+				return nil, fmt.Errorf("error processing DWARF: %v", err)
 			}
 		}
 
 		// process symtab
 		if extract := f.Extract & (SymTabSymbols | ConstantData); extract != 0 {
 			if err := processElfSymTab(doc, elfFile, extract); err != nil {
-				return nil, fmt.Errorf("Error processing symtab: %v", err)
+				return nil, fmt.Errorf("error processing symtab: %v", err)
 			}
 		}
 
@@ -942,10 +938,10 @@ func processSystemMap(doc *vtypeJson, systemMap io.Reader) error {
 // processElfSymTab adds missing symbol information from SymTab to the vtypeJson doc
 func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error {
 	if doc == nil {
-		return fmt.Errorf("Invalid vtypeJSON: nil")
+		return fmt.Errorf("invalid vtypeJSON: nil")
 	}
 	if elfFile == nil {
-		return fmt.Errorf("Invalid elfFile: nil")
+		return fmt.Errorf("invalid elfFile: nil")
 	}
 
 	// we convert the constantDataSymbols slice to a map for fast lookups
