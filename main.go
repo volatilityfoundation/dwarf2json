@@ -658,10 +658,6 @@ Commands:
 
 func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, error) {
 
-	// if machoPath == "" && dwarfPath == "" {
-	// 	return nil, fmt.Errorf("One or more inputs are required")
-	// }
-
 	doc := newVtypeJson()
 
 	for _, f := range files {
@@ -796,48 +792,58 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 		constantDataMap[constantSymbol] = false
 	}
 
-	for _, machosym := range machoSyms {
-
-		symName := machosym.Name
+	normalizeName := func(symName string) string {
 		if stripLeadingUnderscore {
 			symName = strings.TrimPrefix(symName, "_")
 		}
+		return symName
+	}
 
+	symbolsCb := func(machosym macho.Symbol) {
+		symName := normalizeName(machosym.Name)
 		sym, ok := doc.Symbols[symName]
-		// if symbol exists
-		if ok {
-			// Update address
-			// TODO: Remove the address 0 check
-			if sym.Address == 0 && extract&SymTabSymbols != 0 {
-				sym.Address = machosym.Value
-			}
+		if !ok {
+			sym = vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
+		} else if sym.Address == 0 {
+			sym.Address = machosym.Value
+		}
+		doc.Symbols[symName] = sym
+	}
 
-			// Attempt to fill contant data
-			if extract&ConstantData != 0 {
-				func() {
-					if _, ok = constantDataMap[symName]; !ok {
-						return
-					}
+	constantDataCb := func(machosym macho.Symbol) {
+		symName := normalizeName(machosym.Name)
+		_, ok := constantDataMap[symName]
+		if !ok {
+			return
+		}
+		sym, ok := doc.Symbols[symName]
+		if !ok {
+			return
+		}
+		dataLen, ok := sym.SymbolType["count"].(int64)
+		if !ok {
+			return
+		}
+		data, err := readMachoSymbol(machoFile, machosym, uint64(dataLen))
+		if err != nil {
+			return
+		}
+		sym.ConstantData = data
+		doc.Symbols[symName] = sym
+	}
 
-					dataLen, ok := sym.SymbolType["count"].(int64)
-					if !ok {
-						return
-					}
-					data, err := readMachoSymbol(machoFile, machosym, uint64(dataLen))
-					if err != nil {
-						return
-					}
-					sym.ConstantData = data
-				}()
-			}
+	callBacks := []func(machosym macho.Symbol){}
 
-			doc.Symbols[symName] = sym
-		} else {
-			// else create a new symbol
-			if extract&SymTabSymbols != 0 {
-				newsym := vtypeSymbol{Address: machosym.Value, SymbolType: voidType}
-				doc.Symbols[symName] = newsym
-			}
+	if extract&SymTabSymbols != 0 {
+		callBacks = append(callBacks, symbolsCb)
+	}
+	if extract&ConstantData != 0 {
+		callBacks = append(callBacks, constantDataCb)
+	}
+
+	for _, machosym := range machoSyms {
+		for _, cb := range callBacks {
+			cb(machosym)
 		}
 	}
 
