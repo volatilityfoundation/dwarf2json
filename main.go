@@ -184,12 +184,12 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			if loc == nil {
 				address = 0
 			} else {
-				address = uint64_of_location(loc, addressSize)
+				address = locationToUint64(loc, addressSize)
 			}
 			sym := vtypeSymbol{Address: address}
 			genericType, err := data.Type(typOff)
 			if err == nil {
-				sym.SymbolType = type_name(genericType)
+				sym.SymbolType = typeName(genericType)
 			} else {
 				voidType := make(map[string]interface{}, 0)
 				voidType["kind"] = "base"
@@ -237,9 +237,9 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 						vtypeField.FieldType["kind"] = "bitfield"
 						vtypeField.FieldType["bit_position"] = field.BitOffset
 						vtypeField.FieldType["bit_length"] = field.BitSize
-						vtypeField.FieldType["type"] = type_name(field.Type)
+						vtypeField.FieldType["type"] = typeName(field.Type)
 					} else {
-						vtypeField.FieldType = type_name(field.Type)
+						vtypeField.FieldType = typeName(field.Type)
 					}
 
 					// output fields with a type
@@ -249,7 +249,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				}
 			}
 
-			name := struct_name(structType)
+			name := structName(structType)
 			doc.UserTypes[name] = st
 		case dwarf.TagEnumerationType:
 			genericType, err := data.Type(entry.Offset)
@@ -294,7 +294,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				}
 			}
 
-			doc.Enums[enum_name(enumType)] = et
+			doc.Enums[enumName(enumType)] = et
 		case dwarf.TagPointerType:
 			if _, present := doc.BaseTypes["pointer"]; !present {
 				genericType, err := data.Type(entry.Offset)
@@ -311,7 +311,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 			common := genericType.Common()
 			if _, present := doc.BaseTypes[common.Name]; !present {
-				doc.BaseTypes[common.Name] = new_basetype(genericType, endian)
+				doc.BaseTypes[common.Name] = newBasetype(genericType, endian)
 			}
 		}
 		return nil
@@ -351,7 +351,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 
 // This is a very dumbed-down dwarf expression evaluator.
 // For now we only support addresses...
-func compute_dwarf_expr(buf []byte, addressSize int) (uint64, error) {
+func computeDwarfExpression(buf []byte, addressSize int) (uint64, error) {
 	if len(buf) < 5 {
 		return 0, fmt.Errorf("not enough data to compute expression (%d bytes)", len(buf))
 	}
@@ -379,7 +379,7 @@ func compute_dwarf_expr(buf []byte, addressSize int) (uint64, error) {
 	return retval, nil
 }
 
-func uint64_of_location(loc *dwarf.Field, addressSize int) uint64 {
+func locationToUint64(loc *dwarf.Field, addressSize int) uint64 {
 	var result uint64
 
 	switch loc.Class {
@@ -392,7 +392,7 @@ func uint64_of_location(loc *dwarf.Field, addressSize int) uint64 {
 	// case dwarf.ClassLocListPtr:
 	//     fmt.Printf("loclistptr: 0x%x\n", loc.Val.(int64))
 	case dwarf.ClassExprLoc:
-		val, err := compute_dwarf_expr(loc.Val.([]byte), addressSize)
+		val, err := computeDwarfExpression(loc.Val.([]byte), addressSize)
 		if err == nil {
 			result = val
 		} else {
@@ -403,7 +403,7 @@ func uint64_of_location(loc *dwarf.Field, addressSize int) uint64 {
 	return result
 }
 
-func struct_name(dwarfStruct *dwarf.StructType) string {
+func structName(dwarfStruct *dwarf.StructType) string {
 	if dwarfStruct.StructName != "" {
 		return dwarfStruct.StructName
 	}
@@ -412,7 +412,7 @@ func struct_name(dwarfStruct *dwarf.StructType) string {
 	return fmt.Sprintf("unnamed_%8x", data[0:8])
 }
 
-func enum_name(dwarfEnum *dwarf.EnumType) string {
+func enumName(dwarfEnum *dwarf.EnumType) string {
 	if dwarfEnum.EnumName != "" {
 		return dwarfEnum.EnumName
 	}
@@ -421,13 +421,13 @@ func enum_name(dwarfEnum *dwarf.EnumType) string {
 	return fmt.Sprintf("unnamed_%8x", data[0:8])
 }
 
-func type_name(dwarfType dwarf.Type) map[string]interface{} {
+func typeName(dwarfType dwarf.Type) map[string]interface{} {
 	result := make(map[string]interface{}, 0)
 
 	switch t := dwarfType.(type) {
 	case *dwarf.StructType:
 		result["kind"] = t.Kind
-		result["name"] = struct_name(t)
+		result["name"] = structName(t)
 	case *dwarf.ArrayType:
 		result["kind"] = "array"
 		if t.Count < 0 {
@@ -435,20 +435,20 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 		} else {
 			result["count"] = t.Count
 		}
-		result["subtype"] = type_name(t.Type)
+		result["subtype"] = typeName(t.Type)
 	case *dwarf.PtrType:
 		result["kind"] = "pointer"
-		result["subtype"] = type_name(t.Type)
+		result["subtype"] = typeName(t.Type)
 	case *dwarf.EnumType:
 		result["kind"] = "enum"
-		result["name"] = enum_name(t)
+		result["name"] = enumName(t)
 	case *dwarf.BoolType, *dwarf.CharType, *dwarf.ComplexType, *dwarf.IntType, *dwarf.FloatType, *dwarf.UcharType, *dwarf.UintType:
 		result["kind"] = "base"
 		result["name"] = t.Common().Name
 	case *dwarf.TypedefType:
-		result = type_name(t.Type)
+		result = typeName(t.Type)
 	case *dwarf.QualType:
-		result = type_name(t.Type)
+		result = typeName(t.Type)
 	case *dwarf.VoidType, *dwarf.UnspecifiedType:
 		result["kind"] = "base"
 		result["name"] = "void"
@@ -462,7 +462,7 @@ func type_name(dwarfType dwarf.Type) map[string]interface{} {
 	return result
 }
 
-func new_basetype(dwarfType dwarf.Type, endian string) vtypeBaseType {
+func newBasetype(dwarfType dwarf.Type, endian string) vtypeBaseType {
 	signed := true
 	kind := "int"
 
