@@ -46,6 +46,7 @@ const (
 	DwarfTypes    Extract = 2
 	SymTabSymbols Extract = 4
 	ConstantData  Extract = 8
+	SystemMap     Extract = 16
 )
 
 // FileToProcess defines the file that needs to be processed and
@@ -63,7 +64,6 @@ func (f *FilesToProcess) Add(newFile FileToProcess) {
 	// if file path of the new file exists, then update what needs to be done
 	for i := range *f {
 		if (*f)[i].FilePath == newFile.FilePath {
-			fmt.Printf("updating Extract %v --> %v\n", (*f)[i].Extract, (*f)[i].Extract|newFile.Extract)
 			(*f)[i].Extract |= newFile.Extract
 			return
 		}
@@ -564,9 +564,10 @@ Commands:
 
 	// linux subcommand setup
 	linuxArgs := pflag.NewFlagSet("linux", pflag.ExitOnError)
-	elfPath := linuxArgs.String("elf", "", "ELF file to process (Optional)")
-	systemMapPath := linuxArgs.String("system-map", "", "system.map file to process (Optional)")
-	elfDwarfPath := linuxArgs.String("dwarf", "", "DWARF file to process (Optional)")
+	elfPaths := linuxArgs.StringArray("elf", nil, "files to extract symbol and type informaton (Optional)")
+	systemMapPaths := linuxArgs.StringArray("system-map", nil, "system.map file to process (Optional)")
+	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "files to extract type informaton (Optional)")
+	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "files to extract symbol informaton (Optional)")
 	linuxArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
 		linuxArgs.PrintDefaults()
@@ -609,7 +610,29 @@ Commands:
 		}
 	case "linux":
 		linuxArgs.Parse(os.Args[2:])
-		doc, err = generateLinux(*elfPath, *systemMapPath, *elfDwarfPath)
+
+		var filesToProcess FilesToProcess
+		// Type and Symbols
+		for _, filePath := range *elfPaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
+		}
+
+		// Type only
+		for _, filePath := range *elfTypePaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfTypes})
+		}
+
+		//Symbol only
+		for _, filePath := range *elfSymbolPaths {
+			// filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfSymbols | SymTabSymbols | ConstantData})
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | ConstantData})
+		}
+
+		for _, filePath := range *systemMapPaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SystemMap})
+		}
+
+		doc, err = generateLinux(filesToProcess)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed linux processing: %v\n", err)
 			os.Exit(1)
@@ -683,15 +706,15 @@ func generateMac(files FilesToProcess, arch string, isFat bool) (*vtypeJson, err
 				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
 			}
 
-			if err := doc.addDwarf(data, endian, extract); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
+			if err = doc.addDwarf(data, endian, extract); err != nil {
+				return nil, fmt.Errorf("Error processing DWARF: %v", err)
 			}
 		}
 
 		// process symtab
 		if extract := f.Extract & (SymTabSymbols | ConstantData); extract != 0 {
 			if err := processMachoSymTab(doc, machoFile, extract); err != nil {
-				fmt.Fprintf(os.Stderr, "Error processing symtab: %v\n", err)
+				return nil, fmt.Errorf("Error processing symtab: %v", err)
 			}
 		}
 	}
@@ -825,68 +848,64 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 	return nil
 }
 
-func generateLinux(elfPath string, systemMapPath string, dwarfPath string) (*vtypeJson, error) {
-
-	var endian string
-	var elfFile *elf.File
-	var data *dwarf.Data
-	var err error
-
-	if elfPath == "" && systemMapPath == "" && dwarfPath == "" {
-		return nil, fmt.Errorf("One or more inputs are required")
-	}
+func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 
 	doc := newVtypeJson()
 
-	if dwarfPath != "" {
-		elfFile, err = elf.Open(dwarfPath)
-		if err != nil {
-			return nil, fmt.Errorf("Could not open %s: %v", dwarfPath, err)
-		}
-		defer elfFile.Close()
-		if elfFile.ByteOrder == binary.LittleEndian {
-			endian = "little"
-		} else {
-			endian = "big"
+	for _, f := range files {
+		var elfFile *elf.File
+		var err error
+
+		// process system map text, and skip to next file
+		if extract := f.Extract & (SystemMap); extract != 0 {
+			r, err := os.Open(f.FilePath)
+			if err != nil {
+				return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
+			}
+
+			if err := processSystemMap(doc, r); err != nil {
+				return nil, fmt.Errorf("Error processing system map: %v", err)
+			}
+			continue
 		}
 
-		doc.Metadata.SetFile(filepath.Base(elfPath))
-
-		data, err = elfFile.DWARF()
+		// process binary elf files
+		elfFile, err = elf.Open(f.FilePath)
 		if err != nil {
-			return nil, fmt.Errorf("Could not get DWARF from %s: %v", dwarfPath, err)
-		}
-		if err = doc.addDwarf(data, endian, DwarfTypes); err != nil {
-			fmt.Fprintf(os.Stderr, "Error processing DWARF: %v\n", err)
-		}
-	}
-	if elfPath != "" {
-		elfFile, err = elf.Open(elfPath)
-		if err != nil {
-			return nil, fmt.Errorf("%s not valid ELF file: %v", elfPath, err)
+			return nil, fmt.Errorf("Could not open %s: %v", f.FilePath, err)
 		}
 		defer elfFile.Close()
 
-		if err = processElfSymTab(doc, elfFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Error processing symtab of %s: %v\n", elfPath, err)
+		// process dwarf
+		if extract := f.Extract & (DwarfTypes | DwarfSymbols); extract != 0 {
+			var endian string
+
+			doc.Metadata.SetFile(filepath.Base(f.FilePath))
+			if elfFile.ByteOrder == binary.LittleEndian {
+				endian = "little"
+			} else {
+				endian = "big"
+			}
+
+			data, err := elfFile.DWARF()
+			if err != nil {
+				return nil, fmt.Errorf("Could not get DWARF from %s: %v", f.FilePath, err)
+			}
+
+			if err = doc.addDwarf(data, endian, extract); err != nil {
+				return nil, fmt.Errorf("Error processing DWARF: %v", err)
+			}
 		}
 
-		if err := addElfConstantData(doc, elfFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Error adding constant data: %v\n", err)
+		// process symtab
+		if extract := f.Extract & (SymTabSymbols | ConstantData); extract != 0 {
+			if err := processElfSymTab(doc, elfFile, extract); err != nil {
+				return nil, fmt.Errorf("Error processing symtab: %v", err)
+			}
 		}
 
 	}
-	if systemMapPath != "" {
-		systemMap, err := os.Open(systemMapPath)
-		if err != nil {
-			return nil, fmt.Errorf("could not open %s: %v", systemMapPath, err)
-		}
-		defer systemMap.Close()
-		err = processSystemMap(doc, systemMap)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error adding symbols from %s: %v\n", systemMapPath, err)
-		}
-	}
+
 	return doc, nil
 }
 
@@ -921,45 +940,10 @@ func processSystemMap(doc *vtypeJson, systemMap io.Reader) error {
 }
 
 // processElfSymTab adds missing symbol information from SymTab to the vtypeJson doc
-func processElfSymTab(doc *vtypeJson, elfFile *elf.File) error {
+func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error {
 	if doc == nil {
 		return fmt.Errorf("Invalid vtypeJSON: nil")
 	}
-	if elfFile == nil {
-		return fmt.Errorf("Invalid elfFile: nil")
-	}
-
-	// go through the ELF symbols looking for missing addresses
-	elfsymbols, err := elfFile.Symbols()
-	if err != nil {
-		return fmt.Errorf("could not get symbols: %v", err)
-	}
-
-	voidType := make(map[string]interface{}, 0)
-	voidType["kind"] = "base"
-	voidType["name"] = "void"
-
-	for _, elfsym := range elfsymbols {
-
-		sym, ok := doc.Symbols[elfsym.Name]
-		if ok && sym.Address == 0 {
-			sym.Address = elfsym.Value
-			doc.Symbols[elfsym.Name] = sym
-		} else {
-			newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
-			doc.Symbols[elfsym.Name] = newsym
-		}
-	}
-	return nil
-}
-
-// addElfConstantData adds constanta data values to the requested symbols
-func addElfConstantData(doc *vtypeJson, elfFile *elf.File) error {
-
-	if doc == nil {
-		return fmt.Errorf("Invalid vtypeJSON: nil")
-	}
-
 	if elfFile == nil {
 		return fmt.Errorf("Invalid elfFile: nil")
 	}
@@ -976,17 +960,33 @@ func addElfConstantData(doc *vtypeJson, elfFile *elf.File) error {
 		return fmt.Errorf("could not get symbols: %v", err)
 	}
 
+	voidType := make(map[string]interface{}, 0)
+	voidType["kind"] = "base"
+	voidType["name"] = "void"
+
 	for _, elfsym := range elfsymbols {
-		var data []byte
 
 		sym, ok := doc.Symbols[elfsym.Name]
-		if !ok {
-			continue
+
+		var data []byte
+		if extract&ConstantData != 0 {
+			_, ok := constantDataMap[elfsym.Name]
+			if ok {
+				data, _ = readELFSymbol(elfFile, elfsym)
+			}
 		}
-		if _, ok = constantDataMap[elfsym.Name]; ok {
-			data, _ = readELFSymbol(elfFile, elfsym)
+
+		if ok && sym.Address == 0 {
+			if extract&SymTabSymbols != 0 {
+				sym.Address = elfsym.Value
+			}
 			sym.ConstantData = data
 			doc.Symbols[elfsym.Name] = sym
+		} else {
+			if extract&SymTabSymbols != 0 {
+				newsym := vtypeSymbol{Address: elfsym.Value, SymbolType: voidType, ConstantData: data}
+				doc.Symbols[elfsym.Name] = newsym
+			}
 		}
 	}
 	return nil
