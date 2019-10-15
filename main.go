@@ -162,25 +162,51 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 
 	doc.BaseTypes["void"] = vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
-	// go through the DWARF
-	reader := data.Reader()
-	for {
-		entry, err := reader.Next()
-		if entry == nil && err == nil {
-			// fmt.Printf("Done!\n")
-			break
-		}
+	symbolsCb := func(entry *dwarf.Entry, addressSize int) error {
+		switch entry.Tag {
+		case dwarf.TagVariable:
+			name, _ := entry.Val(dwarf.AttrName).(string)
+			typOff, _ := entry.Val(dwarf.AttrType).(dwarf.Offset)
+			loc := entry.AttrField(dwarf.AttrLocation)
+			if name == "" || typOff == 0 {
+				// if entry.Val(dwarf.AttrSpecification) != nil {
+				//     // Since we are reading all the DWARF,
+				//     // assume we will see the variable elsewhere.
+				//     break
+				// }
+				break
+				// return fmt.Errorf("malformed DWARF TagVariable entry")
+			}
 
-		if err != nil {
-			return err
+			var address uint64
+			// insert 0 when we don't know the address. ELF symbol table
+			// may know it...
+			if loc == nil {
+				address = 0
+			} else {
+				address = uint64_of_location(loc, addressSize)
+			}
+			sym := vtypeSymbol{Address: address}
+			genericType, err := data.Type(typOff)
+			if err == nil {
+				sym.SymbolType = type_name(genericType)
+			} else {
+				voidType := make(map[string]interface{}, 0)
+				voidType["kind"] = "base"
+				voidType["name"] = "void"
+				sym.SymbolType = voidType
+			}
+			doc.Symbols[name] = sym
 		}
+		return nil
+
+	}
+
+	typesCb := func(entry *dwarf.Entry, addressSize int) error {
 		switch entry.Tag {
 		case dwarf.TagUnionType:
 			fallthrough
 		case dwarf.TagStructType:
-			if extract&DwarfTypes == 0 {
-				continue
-			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -226,9 +252,6 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			name := struct_name(structType)
 			doc.UserTypes[name] = st
 		case dwarf.TagEnumerationType:
-			if extract&DwarfTypes == 0 {
-				continue
-			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -272,46 +295,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 
 			doc.Enums[enum_name(enumType)] = et
-		case dwarf.TagVariable:
-			if extract&DwarfSymbols == 0 {
-				continue
-			}
-			name, _ := entry.Val(dwarf.AttrName).(string)
-			typOff, _ := entry.Val(dwarf.AttrType).(dwarf.Offset)
-			loc := entry.AttrField(dwarf.AttrLocation)
-			if name == "" || typOff == 0 {
-				// if entry.Val(dwarf.AttrSpecification) != nil {
-				//     // Since we are reading all the DWARF,
-				//     // assume we will see the variable elsewhere.
-				//     break
-				// }
-				// fmt.Printf("malformed DWARF TagVariable entry?\n")
-				break
-			}
-
-			var address uint64
-			// insert 0 when we don't know the address. ELF symbol table
-			// may know it...
-			if loc == nil {
-				address = 0
-			} else {
-				address = uint64_of_location(loc, reader.AddressSize())
-			}
-			sym := vtypeSymbol{Address: address}
-			genericType, err := data.Type(typOff)
-			if err == nil {
-				sym.SymbolType = type_name(genericType)
-			} else {
-				voidType := make(map[string]interface{}, 0)
-				voidType["kind"] = "base"
-				voidType["name"] = "void"
-				sym.SymbolType = voidType
-			}
-			doc.Symbols[name] = sym
 		case dwarf.TagPointerType:
-			if extract&DwarfTypes == 0 {
-				continue
-			}
 			if _, present := doc.BaseTypes["pointer"]; !present {
 				genericType, err := data.Type(entry.Offset)
 				if err != nil {
@@ -321,9 +305,6 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 					vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
 			}
 		case dwarf.TagBaseType:
-			if extract&DwarfTypes == 0 {
-				continue
-			}
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
 				break
@@ -331,6 +312,37 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			common := genericType.Common()
 			if _, present := doc.BaseTypes[common.Name]; !present {
 				doc.BaseTypes[common.Name] = new_basetype(genericType, endian)
+			}
+		}
+		return nil
+	}
+
+	callBacks := []func(entry *dwarf.Entry, addressSize int) error{}
+
+	if extract&DwarfTypes != 0 {
+		callBacks = append(callBacks, typesCb)
+	}
+	if extract&DwarfSymbols != 0 {
+		callBacks = append(callBacks, symbolsCb)
+	}
+
+	// go through the DWARF
+	reader := data.Reader()
+	for {
+		entry, err := reader.Next()
+		if entry == nil && err == nil {
+			// fmt.Printf("Done!\n")
+			break
+		}
+
+		if err != nil {
+			return err
+		}
+
+		for _, cb := range callBacks {
+			err = cb(entry, reader.AddressSize())
+			if err != nil {
+				return err
 			}
 		}
 	}
