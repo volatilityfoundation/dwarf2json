@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -539,6 +538,27 @@ func readMachoSymbol(file *macho.File, symbol macho.Symbol, length uint64) ([]by
 	return result, err
 }
 
+func firstPflagArg(flagSet *pflag.FlagSet, skipFlags ...string) string {
+	var firstOne string
+
+	flagSet.SortFlags = false
+	flagSet.Visit(func(p *pflag.Flag) {
+		for _, skipName := range skipFlags {
+			if skipName == p.Name {
+				return
+			}
+		}
+		if firstOne == "" {
+			if v, ok := p.Value.(pflag.SliceValue); ok {
+				firstOne = v.GetSlice()[0]
+			} else {
+				firstOne = p.Value.String()
+			}
+		}
+	})
+	return firstOne
+}
+
 func main() {
 
 	// Help message setup
@@ -622,6 +642,10 @@ Commands:
 			fmt.Fprintf(os.Stderr, "Failed mac processing: %v\n", err)
 			os.Exit(1)
 		}
+
+		// Set the file path in the metadata to the first file that was passed
+		// on the command line
+		doc.Metadata.SetFile(firstPflagArg(macArgs, "arch"))
 	case "linux":
 		linuxArgs.Parse(os.Args[2:])
 
@@ -658,6 +682,10 @@ Commands:
 			fmt.Fprintf(os.Stderr, "Failed linux processing: %v\n", err)
 			os.Exit(1)
 		}
+
+		// Set the file path in the metadata to the first file that was passed
+		// on the command line
+		doc.Metadata.SetFile(firstPflagArg(linuxArgs))
 	case "-h", "--help":
 		pflag.Usage()
 		os.Exit(0)
@@ -711,7 +739,6 @@ func generateMac(files FilesToProcess, fatArch string) (*vtypeJson, error) {
 		// process dwarf
 		if extract := f.Extract & (DwarfTypes | DwarfSymbols); extract != 0 {
 			var endian string
-			doc.Metadata.SetFile(filepath.Base(f.FilePath))
 
 			if machoFile.ByteOrder == binary.LittleEndian {
 				endian = "little"
@@ -907,7 +934,6 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 		if extract := f.Extract & (DwarfTypes | DwarfSymbols); extract != 0 {
 			var endian string
 
-			doc.Metadata.SetFile(filepath.Base(f.FilePath))
 			if elfFile.ByteOrder == binary.LittleEndian {
 				endian = "little"
 			} else {
