@@ -594,14 +594,15 @@ Commands:
 		macArgs.Parse(os.Args[2:])
 
 		var filesToProcess FilesToProcess
-		// Type and Symbols
-		for _, filePath := range *machoPaths {
-			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
-		}
 
 		// Type only
 		for _, filePath := range *machoTypePaths {
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfTypes})
+		}
+
+		// Type and Symbols
+		for _, filePath := range *machoPaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
 		}
 
 		//Symbol only
@@ -625,14 +626,14 @@ Commands:
 		linuxArgs.Parse(os.Args[2:])
 
 		var filesToProcess FilesToProcess
-		// Type and Symbols
-		for _, filePath := range *elfPaths {
-			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
-		}
-
 		// Type only
 		for _, filePath := range *elfTypePaths {
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: DwarfTypes})
+		}
+
+		// Type and Symbols
+		for _, filePath := range *elfPaths {
+			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | DwarfSymbols | DwarfTypes | ConstantData})
 		}
 
 		//Symbol only
@@ -641,6 +642,7 @@ Commands:
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SymTabSymbols | ConstantData})
 		}
 
+		// System.Map processing
 		for _, filePath := range *systemMapPaths {
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SystemMap})
 		}
