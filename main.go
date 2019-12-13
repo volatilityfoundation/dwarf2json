@@ -399,7 +399,7 @@ func locationToUint64(loc *dwarf.Field, addressSize int) uint64 {
 		}
 	}
 
-	return result
+	return result & 0xffffffffffff
 }
 
 func structName(dwarfStruct *dwarf.StructType) string {
@@ -984,7 +984,7 @@ func processSystemMap(doc *vtypeJson, systemMap io.Reader) error {
 		if !ok {
 			sym = &vtypeSymbol{Address: addr, SymbolType: voidType}
 		} else {
-			sym.Address = addr
+			sym.Address = addr & 0xffffffffffff
 		}
 		doc.Symbols[symName] = sym
 	}
@@ -1021,7 +1021,7 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error 
 		if !ok {
 			sym = &vtypeSymbol{Address: elfsym.Value, SymbolType: voidType}
 		} else {
-			sym.Address = elfsym.Value
+			sym.Address = elfsym.Value & 0xffffffffffff
 		}
 		doc.Symbols[elfsym.Name] = sym
 	}
