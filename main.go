@@ -32,8 +32,8 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.5.0"
-	FORMAT_VERSION = "4.1.0"
+	TOOL_VERSION   = "0.6.0"
+	FORMAT_VERSION = "6.2.0"
 )
 
 // Extract defines the type/symbol information that should be processed
@@ -112,6 +112,7 @@ func (v *vtypeMetadata) SetFile(filename string) {
 type vtypeStructField struct {
 	FieldType map[string]interface{} `json:"type,omitempty"`
 	Offset    int64                  `json:"offset"`
+	Anonymous bool                   `json:"anonymous,omitempty"`
 }
 
 type vtypeStruct struct {
@@ -226,11 +227,12 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 
 			for _, field := range structType.Field {
 				if field != nil {
+					vtypeField := vtypeStructField{Offset: field.ByteOffset}
 					fieldName := field.Name
 					if fieldName == "" {
 						fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
+						vtypeField.Anonymous = true
 					}
-					vtypeField := vtypeStructField{Offset: field.ByteOffset}
 					if field.BitSize != 0 {
 						vtypeField.FieldType = make(map[string]interface{})
 						vtypeField.FieldType["kind"] = "bitfield"
