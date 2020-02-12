@@ -43,11 +43,12 @@ type Extract int
 
 // Defines information to extract during processing steps
 const (
-	DwarfSymbols  Extract = 1
-	DwarfTypes    Extract = 2
-	SymTabSymbols Extract = 4
-	ConstantData  Extract = 8
-	SystemMap     Extract = 16
+	DwarfSymbols         Extract = 1
+	DwarfTypes           Extract = 2
+	SymTabSymbols        Extract = 4
+	ConstantData         Extract = 8
+	SystemMap            Extract = 16
+	ReferenceSymbolTypes Extract = 32
 )
 
 // FileToProcess defines the file that needs to be processed and
@@ -622,6 +623,7 @@ Commands:
 	systemMapPaths := linuxArgs.StringArray("system-map", nil, "System.Map file `PATH` to extract symbol information")
 	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "ELF file `PATH` to extract only type information")
 	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "ELF file `PATH` to extract only symbol information")
+	symbolTypesReferencePath := linuxArgs.String("reference-symbols", "", "ISF reference file with symbol types")
 	linuxArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
 		linuxArgs.PrintDefaults()
@@ -693,6 +695,11 @@ Commands:
 		// System.Map processing
 		for _, filePath := range *systemMapPaths {
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SystemMap})
+		}
+
+		// Reference symbol types
+		if *symbolTypesReferencePath != "" {
+			filesToProcess.Add(FileToProcess{FilePath: *symbolTypesReferencePath, Extract: ReferenceSymbolTypes})
 		}
 
 		if len(filesToProcess) == 0 {
@@ -955,6 +962,7 @@ func generateLinux(files FilesToProcess, linuxBanner string) (*vtypeJson, error)
 			if err != nil {
 				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 			}
+			defer r.Close()
 
 			if err := processSystemMap(doc, r); err != nil {
 				return nil, fmt.Errorf("error processing system map: %v", err)
@@ -965,6 +973,20 @@ func generateLinux(files FilesToProcess, linuxBanner string) (*vtypeJson, error)
 			fileMeta.Kind = "system-map"
 			linuxMeta.Symbols = append(linuxMeta.Symbols, fileMeta)
 
+			continue
+		}
+
+		// process reference symbol types, and skip to the next file
+		if extract := f.Extract & (ReferenceSymbolTypes); extract != 0 {
+			r, err := os.Open(f.FilePath)
+			if err != nil {
+				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
+			}
+			defer r.Close()
+
+			if err := processReferenceSymbolTypes(doc, r); err != nil {
+				return nil, fmt.Errorf("error processing reference symbol types: %v", err)
+			}
 			continue
 		}
 
@@ -1025,6 +1047,44 @@ func generateLinux(files FilesToProcess, linuxBanner string) (*vtypeJson, error)
 	}
 
 	return doc, nil
+}
+
+// processRefernceSymbolTypes adds symbol types from the reference reader.
+// The reader is assumed to the a valid vtypeJson marshalled file.
+func processReferenceSymbolTypes(doc *vtypeJson, refSymbolTypes io.Reader) error {
+	var refDoc vtypeJson
+	dec := json.NewDecoder(refSymbolTypes)
+	err := dec.Decode(&refDoc)
+	if err != nil {
+		return err
+	}
+
+	//Sort ref symbols in alph order
+	refSymbols := make([]string, 0, len(refDoc.Symbols))
+	for k := range refDoc.Symbols {
+		refSymbols = append(refSymbols, k)
+	}
+	sort.Strings(refSymbols)
+
+	//Create a cache of doc symbols in alph order
+	docSymbols := make([]string, 0, len(doc.Symbols))
+	for k := range doc.Symbols {
+		docSymbols = append(docSymbols, k)
+	}
+	sort.Strings(docSymbols)
+
+	//For each match, replace doc symbol type with reference symbol type
+	refIndex := 0
+	for _, symName := range docSymbols {
+		for j := refIndex; j < len(refSymbols); j++ {
+			if symName == refSymbols[j] {
+				doc.Symbols[symName].SymbolType = refDoc.Symbols[symName].SymbolType
+				refIndex = j
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // processSystemMap adds the missing symbol information from system.map to vtypeJson doc
