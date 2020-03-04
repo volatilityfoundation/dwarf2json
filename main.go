@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"crypto/sha256"
 	"debug/dwarf"
 	"debug/elf"
 	"debug/macho"
@@ -19,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,8 +85,48 @@ var constantMacosDataSymbols = []string{"version"}
 // underscore.
 var stripLeadingUnderscore = false
 
+// sha256Sum computes sha256 hash of filePath
+func sha256Sum(filePath string) ([]byte, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+
+	return h.Sum(nil), nil
+
+}
+
+type sourceMetadata struct {
+	Kind      string `json:"kind,omitempty"`
+	Name      string `json:"name,omitempty"`
+	HashType  string `json:"hash_type,omitempty"`
+	HashValue string `json:"hash_value,omitempty"`
+}
+
+func newSourceMetadata(filePath string) *sourceMetadata {
+	fileMeta := &sourceMetadata{Name: filepath.Base(filePath)}
+	sha, err := sha256Sum(filePath)
+	if err == nil {
+		fileMeta.HashType = "sha256"
+		fileMeta.HashValue = fmt.Sprintf("%x", sha)
+	}
+	return fileMeta
+}
+
+type unixMetadata struct {
+	Symbols []*sourceMetadata `json:"symbols,omitempty"`
+	Types   []*sourceMetadata `json:"types,omitempty"`
+}
+
 type vtypeMetadata struct {
-	Source   map[string]string `json:"source"`
+	Linux    *unixMetadata     `json:"linux,omitempty"`
+	Mac      *unixMetadata     `json:"mac,omitempty"`
 	Producer map[string]string `json:"producer"`
 	Format   string            `json:"format"`
 }
@@ -94,19 +136,13 @@ type vtypeMetadata struct {
 func newVtypeMetadata() *vtypeMetadata {
 	result :=
 		&vtypeMetadata{
-			Source:   make(map[string]string),
 			Producer: make(map[string]string),
 			Format:   FORMAT_VERSION,
 		}
 
-	result.Source["type"] = "dwarf"
 	result.Producer["version"] = TOOL_VERSION
 	result.Producer["name"] = TOOL_NAME
 	return result
-}
-
-func (v *vtypeMetadata) SetFile(filename string) {
-	v.Source["file"] = filename
 }
 
 type vtypeStructField struct {
@@ -540,27 +576,6 @@ func readMachoSymbol(file *macho.File, symbol macho.Symbol, length uint64) ([]by
 	return result, err
 }
 
-func firstPflagArg(flagSet *pflag.FlagSet, skipFlags ...string) string {
-	var firstOne string
-
-	flagSet.SortFlags = false
-	flagSet.Visit(func(p *pflag.Flag) {
-		for _, skipName := range skipFlags {
-			if skipName == p.Name {
-				return
-			}
-		}
-		if firstOne == "" {
-			if v, ok := p.Value.(pflag.SliceValue); ok {
-				firstOne = v.GetSlice()[0]
-			} else {
-				firstOne = p.Value.String()
-			}
-		}
-	})
-	return firstOne
-}
-
 func main() {
 
 	// Help message setup
@@ -645,9 +660,6 @@ Commands:
 			os.Exit(1)
 		}
 
-		// Set the file path in the metadata to the first file that was passed
-		// on the command line
-		doc.Metadata.SetFile(firstPflagArg(macArgs, "arch"))
 	case "linux":
 		linuxArgs.Parse(os.Args[2:])
 
@@ -685,9 +697,6 @@ Commands:
 			os.Exit(1)
 		}
 
-		// Set the file path in the metadata to the first file that was passed
-		// on the command line
-		doc.Metadata.SetFile(firstPflagArg(linuxArgs))
 	case "-h", "--help":
 		pflag.Usage()
 		os.Exit(0)
@@ -714,6 +723,7 @@ Commands:
 func generateMac(files FilesToProcess, fatArch string) (*vtypeJson, error) {
 
 	doc := newVtypeJson()
+	macMeta := new(unixMetadata)
 
 	for _, f := range files {
 		var machoFile *macho.File
@@ -755,6 +765,16 @@ func generateMac(files FilesToProcess, fatArch string) (*vtypeJson, error) {
 			if err = doc.addDwarf(data, endian, extract); err != nil {
 				return nil, fmt.Errorf("error processing DWARF: %v", err)
 			}
+
+			// Add meta information
+			fileMeta := newSourceMetadata(f.FilePath)
+			fileMeta.Kind = "dwarf"
+			if f.Extract&DwarfSymbols != 0 {
+				macMeta.Symbols = append(macMeta.Symbols, fileMeta)
+			}
+			if f.Extract&DwarfTypes != 0 {
+				macMeta.Types = append(macMeta.Types, fileMeta)
+			}
 		}
 
 		// process symtab
@@ -762,9 +782,15 @@ func generateMac(files FilesToProcess, fatArch string) (*vtypeJson, error) {
 			if err := processMachoSymTab(doc, machoFile, extract); err != nil {
 				return nil, fmt.Errorf("error processing symtab: %v", err)
 			}
+
+			// Add meta information
+			fileMeta := newSourceMetadata(f.FilePath)
+			fileMeta.Kind = "symtab"
+			macMeta.Symbols = append(macMeta.Symbols, fileMeta)
 		}
 	}
 
+	doc.Metadata.Mac = macMeta
 	return doc, nil
 }
 
@@ -907,6 +933,7 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 
 	doc := newVtypeJson()
+	linuxMeta := new(unixMetadata)
 
 	for _, f := range files {
 		var elfFile *elf.File
@@ -922,6 +949,12 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 			if err := processSystemMap(doc, r); err != nil {
 				return nil, fmt.Errorf("error processing system map: %v", err)
 			}
+
+			// Add meta information
+			fileMeta := newSourceMetadata(f.FilePath)
+			fileMeta.Kind = "system-map"
+			linuxMeta.Symbols = append(linuxMeta.Symbols, fileMeta)
+
 			continue
 		}
 
@@ -950,6 +983,16 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 			if err = doc.addDwarf(data, endian, extract); err != nil {
 				return nil, fmt.Errorf("error processing DWARF: %v", err)
 			}
+
+			// Add meta information
+			fileMeta := newSourceMetadata(f.FilePath)
+			fileMeta.Kind = "dwarf"
+			if f.Extract&DwarfSymbols != 0 {
+				linuxMeta.Symbols = append(linuxMeta.Symbols, fileMeta)
+			}
+			if f.Extract&DwarfTypes != 0 {
+				linuxMeta.Types = append(linuxMeta.Types, fileMeta)
+			}
 		}
 
 		// process symtab
@@ -957,10 +1000,15 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 			if err := processElfSymTab(doc, elfFile, extract); err != nil {
 				return nil, fmt.Errorf("error processing symtab: %v", err)
 			}
+
+			// Add meta information
+			fileMeta := newSourceMetadata(f.FilePath)
+			fileMeta.Kind = "symtab"
+			linuxMeta.Symbols = append(linuxMeta.Symbols, fileMeta)
 		}
 
 	}
-
+	doc.Metadata.Linux = linuxMeta
 	return doc, nil
 }
 
