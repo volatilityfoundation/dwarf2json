@@ -262,27 +262,32 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				}
 
 			for _, field := range structType.Field {
-				if field != nil {
-					vtypeField := vtypeStructField{Offset: field.ByteOffset}
-					fieldName := field.Name
-					if fieldName == "" {
-						fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
-						vtypeField.Anonymous = true
-					}
-					if field.BitSize != 0 {
-						vtypeField.FieldType = make(map[string]interface{})
-						vtypeField.FieldType["kind"] = "bitfield"
-						vtypeField.FieldType["bit_position"] = field.BitOffset
-						vtypeField.FieldType["bit_length"] = field.BitSize
-						vtypeField.FieldType["type"] = typeName(field.Type)
-					} else {
-						vtypeField.FieldType = typeName(field.Type)
-					}
+				if field == nil {
+					continue
+				}
 
-					// output fields with a type
-					if vtypeField.FieldType != nil {
-						st.Fields[fieldName] = vtypeField
-					}
+				fieldType := typeName(field.Type)
+
+				// skip fields for which type cannot be obtained
+				if fieldType == nil {
+					continue
+				}
+
+				vtypeField := vtypeStructField{Offset: field.ByteOffset}
+				fieldName := field.Name
+				if fieldName == "" {
+					fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
+					vtypeField.Anonymous = true
+				}
+
+				if field.BitSize != 0 {
+					vtypeField.FieldType = make(map[string]interface{})
+					vtypeField.FieldType["kind"] = "bitfield"
+					vtypeField.FieldType["bit_position"] = field.BitOffset
+					vtypeField.FieldType["bit_length"] = field.BitSize
+					vtypeField.FieldType["type"] = fieldType
+				} else {
+					vtypeField.FieldType = fieldType
 				}
 			}
 
