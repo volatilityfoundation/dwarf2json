@@ -289,6 +289,8 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				} else {
 					vtypeField.FieldType = fieldType
 				}
+
+				st.Fields[fieldName] = vtypeField
 			}
 
 			name := structName(structType)
