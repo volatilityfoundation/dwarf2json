@@ -623,7 +623,7 @@ Commands:
 	systemMapPaths := linuxArgs.StringArray("system-map", nil, "System.Map file `PATH` to extract symbol information")
 	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "ELF file `PATH` to extract only type information")
 	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "ELF file `PATH` to extract only symbol information")
-	symbolTypesReferencePath := linuxArgs.String("reference-symbols", "", "ISF reference file with symbol types")
+	symbolTypesReferencePath := linuxArgs.String("reference-symbols", "", "ISF reference file `PATH` with symbol types")
 	linuxArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
 		linuxArgs.PrintDefaults()
@@ -1051,7 +1051,7 @@ func generateLinux(files FilesToProcess, linuxBanner string) (*vtypeJson, error)
 }
 
 // processRefernceSymbolTypes adds symbol types from the reference reader.
-// The reader is assumed to the a valid vtypeJson marshalled file.
+// The reader is assumed to be a valid vtypeJson marshalled file.
 func processReferenceSymbolTypes(doc *vtypeJson, refSymbolTypes io.Reader) error {
 	var refDoc vtypeJson
 	dec := json.NewDecoder(refSymbolTypes)
@@ -1078,7 +1078,11 @@ func processReferenceSymbolTypes(doc *vtypeJson, refSymbolTypes io.Reader) error
 	refIndex := 0
 	for _, symName := range docSymbols {
 		for j := refIndex; j < len(refSymbols); j++ {
+			// TODO: consider filtering and only adding types when the type
+			// is defined in doc.UserTypes or doc.BaseTypes.
 			if symName == refSymbols[j] {
+				// Copies a reference, since refDoc is not modified.
+				// TODO: consider doing a deep copy.
 				doc.Symbols[symName].SymbolType = refDoc.Symbols[symName].SymbolType
 				refIndex = j
 				break
