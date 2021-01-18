@@ -283,9 +283,11 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				if field.BitSize != 0 {
 					vtypeField.FieldType = make(map[string]interface{})
 					vtypeField.FieldType["kind"] = "bitfield"
-					vtypeField.FieldType["bit_position"] = field.BitOffset
 					vtypeField.FieldType["bit_length"] = field.BitSize
 					vtypeField.FieldType["type"] = fieldType
+					// calculation to change the DWARF offset from MSB to LSB
+					maxPos := (8 * field.ByteSize) - 1
+					vtypeField.FieldType["bit_position"] = maxPos - (field.BitOffset + (field.BitSize - 1))
 				} else {
 					vtypeField.FieldType = fieldType
 				}
