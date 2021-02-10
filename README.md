@@ -22,6 +22,8 @@ To run:
     mac    generate ISF for macOS analysis
 ```
 
+Note: processing large DWARF files requires a minimum of 8GB RAM.
+
 # Linux Processing
 `dwarf2json` supports processing DWARF and symbol table information from ELF
 files and symbols from System.map input files to produce ISF for
