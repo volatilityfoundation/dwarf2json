@@ -5,6 +5,8 @@ information to generate [Volatilty3](https://github.com/volatilityfoundation/vol
 Intermediate Symbol File (ISF) JSON output suitable for Linux and macOS
 analysis.
 
+[![build](https://github.com/volatilityfoundation/dwarf2json/workflows/build/badge.svg)](https://github.com/volatilityfoundation/dwarf2json/actions?query=workflow%3Abuild)
+
 To build (Go 1.13+ required):
 ```
   $ go build

@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.15
+
+    - name: Build Linux AMD64
+      run: go build -v -o dwarf2json-linux-amd64
+      env:
+        GOOS: linux
+        GOARCH: amd64
+
+    - name: Build Windows AMD64
+      run: go build -v -o dwarf2json-windows-amd64.exe
+      env:
+        GOOS: windows
+        GOARCH: amd64
+
+    - name: Build Darwin AMD64
+      run: go build -v -o dwarf2json-darwin-amd64
+      env:
+        GOOS: darwin
+        GOARCH: amd64
+
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: dwarf2json
+        path: |
+          dwarf2json-linux-amd64
+          dwarf2json-windows-amd64.exe
+          dwarf2json-darwin-amd64
