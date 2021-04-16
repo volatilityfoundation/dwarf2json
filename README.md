@@ -7,7 +7,7 @@ analysis.
 
 [![build](https://github.com/volatilityfoundation/dwarf2json/workflows/build/badge.svg)](https://github.com/volatilityfoundation/dwarf2json/actions?query=workflow%3Abuild)
 
-To build (Go 1.13+ required):
+To build (Go 1.14+ required):
 ```
   $ go build
 ```
