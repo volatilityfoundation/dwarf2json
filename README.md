@@ -38,10 +38,12 @@ input file.
   $ ./dwarf2json linux --help
   Usage: dwarf2json linux [OPTIONS]
 
-        --elf PATH           ELF file PATH to extract symbol and type information
-        --elf-symbols PATH   ELF file PATH to extract only symbol information
-        --elf-types PATH     ELF file PATH to extract only type information
-        --system-map PATH    System.Map file PATH to extract symbol information
+      --elf PATH                    ELF file PATH to extract symbol and type information
+      --elf-symbols PATH            ELF file PATH to extract only symbol information
+      --elf-types PATH              ELF file PATH to extract only type information
+      --linux-banner linux_banner   Linux banner value matching linux_banner symbol
+      --reference-symbols PATH      ISF reference file PATH with symbol types
+      --system-map PATH             System.Map file PATH to extract symbol information
 ```
 
 For example, to include symbols and types for a given Linux kernel DWARF
@@ -62,6 +64,37 @@ Providing multiple input files for a given flag is allowed. For example,
 `./dwarf2json --elf file1 --elf file2 ...` would process both `file1` and
 `file2`. When conflicting symbol or type information is encountered, the data
 from the last file specified in the command invocation would take precedence.
+
+## Generating ISF without debug information
+
+In situations when debug information for a given kernel is not available,
+`dwarf2json` supports generating an ISF file using the following process:
+
+1. Create a `module.ko` using [Makefile](linux_build_module/Makefile) on the
+   system that has the matching kernel. `dwarf2json` uses `module.ko` to \
+   extract types matching the target kernel.
+2. Collect `Symbols.map` for the target kernel. `dwarf2json` uses `System.map`
+   to populate symbol names and addresses (but no types) of the symbols in the
+   target kernel.
+3. Obtain the `linux_banner` value (e.g., `/proc/version`). `dwarf2json` adds
+   `linux_banner` value to the ISF file to enable matching the ISF to the image
+   being analyzed.
+4. Obtain an ISF file that was created from debug information that will be used
+   as a reference. An ISF for a kernel version matching or close to the target
+   kernel version would work best. `dwarf2json` uses reference ISF to
+   populate the symbol types for the symbols found in `Symbols.map`
+
+The information in (1)-(4) is then provided to `dwarf2json`:
+
+```
+$ ./dwarf2json linux --elf-types /path/to/module.ko \
+  --system-map /path/to/Syste.map \
+  --linux-banner "<linux-banner-string>" \
+  --reference-symbols /path/to/reference_symbols.json \
+  > output.json
+```
+
+Note that `linux_banner` has spaces and needs to be quoted.
 
 # MacOS Processing
 `dwarf2json` supports processing DWARF and symbol table information from Mach-O
