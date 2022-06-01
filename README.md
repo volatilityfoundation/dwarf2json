@@ -1,7 +1,7 @@
 # Introduction
 
 `dwarf2json` is a Go utility that processes files containing symbol and type
-information to generate [Volatilty3](https://github.com/volatilityfoundation/volatility3)
+information to generate [Volatility3](https://github.com/volatilityfoundation/volatility3)
 Intermediate Symbol File (ISF) JSON output suitable for Linux and macOS
 analysis.
 
