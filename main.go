@@ -34,7 +34,7 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.6.0"
+	TOOL_VERSION   = "0.7.0"
 	FORMAT_VERSION = "6.2.0"
 )
 
@@ -194,6 +194,55 @@ type vtypeJson struct {
 	Symbols   map[string]*vtypeSymbol   `json:"symbols"`
 }
 
+func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name string) {
+	if structType.Incomplete {
+		return
+	}
+
+	st :=
+		&vtypeStruct{
+			Size:   structType.Size(),
+			Fields: make(map[string]vtypeStructField),
+			Kind:   structType.Kind,
+		}
+
+	for _, field := range structType.Field {
+		if field == nil {
+			continue
+		}
+
+		fieldType := typeName(field.Type)
+
+		// skip fields for which type cannot be obtained
+		if fieldType == nil {
+			continue
+		}
+
+		vtypeField := vtypeStructField{Offset: field.ByteOffset}
+		fieldName := field.Name
+		if fieldName == "" {
+			fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
+			vtypeField.Anonymous = true
+		}
+
+		if field.BitSize != 0 {
+			vtypeField.FieldType = make(map[string]interface{})
+			vtypeField.FieldType["kind"] = "bitfield"
+			vtypeField.FieldType["bit_length"] = field.BitSize
+			vtypeField.FieldType["type"] = fieldType
+			// calculation to change the DWARF offset from MSB to LSB
+			maxPos := (8 * field.ByteSize) - 1
+			vtypeField.FieldType["bit_position"] = maxPos - (field.BitOffset + (field.BitSize - 1))
+		} else {
+			vtypeField.FieldType = fieldType
+		}
+
+		st.Fields[fieldName] = vtypeField
+	}
+
+	doc.UserTypes[name] = st
+}
+
 func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract) error {
 
 	doc.BaseTypes["void"] = &vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
@@ -251,52 +300,8 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			if ok != true {
 				return fmt.Errorf("%s is not a StructType?", genericType.String())
 			}
-			if structType.Incomplete == true {
-				break
-			}
-			st :=
-				&vtypeStruct{
-					Size:   structType.Size(),
-					Fields: make(map[string]vtypeStructField),
-					Kind:   structType.Kind,
-				}
 
-			for _, field := range structType.Field {
-				if field == nil {
-					continue
-				}
-
-				fieldType := typeName(field.Type)
-
-				// skip fields for which type cannot be obtained
-				if fieldType == nil {
-					continue
-				}
-
-				vtypeField := vtypeStructField{Offset: field.ByteOffset}
-				fieldName := field.Name
-				if fieldName == "" {
-					fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
-					vtypeField.Anonymous = true
-				}
-
-				if field.BitSize != 0 {
-					vtypeField.FieldType = make(map[string]interface{})
-					vtypeField.FieldType["kind"] = "bitfield"
-					vtypeField.FieldType["bit_length"] = field.BitSize
-					vtypeField.FieldType["type"] = fieldType
-					// calculation to change the DWARF offset from MSB to LSB
-					maxPos := (8 * field.ByteSize) - 1
-					vtypeField.FieldType["bit_position"] = maxPos - (field.BitOffset + (field.BitSize - 1))
-				} else {
-					vtypeField.FieldType = fieldType
-				}
-
-				st.Fields[fieldName] = vtypeField
-			}
-
-			name := structName(structType)
-			doc.UserTypes[name] = st
+			doc.addStruct(structType, structName(structType))
 		case dwarf.TagEnumerationType:
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
@@ -359,6 +364,21 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			if _, present := doc.BaseTypes[common.Name]; !present {
 				doc.BaseTypes[common.Name] = newBasetype(genericType, endian)
 			}
+		case dwarf.TagTypedef:
+			genericType, err := data.Type(entry.Offset)
+			if err != nil {
+				break
+			}
+
+			typedefType, ok := genericType.(*dwarf.TypedefType)
+			if !ok {
+				break
+			}
+
+			if structType, ok := typedefType.Type.(*dwarf.StructType); ok && structType.Name == "" {
+				doc.addStruct(structType, typedefType.Name)
+			}
+
 		}
 		return nil
 	}
@@ -492,7 +512,12 @@ func typeName(dwarfType dwarf.Type) map[string]interface{} {
 		result["kind"] = "base"
 		result["name"] = t.Common().Name
 	case *dwarf.TypedefType:
-		result = typeName(t.Type)
+		if structType, ok := t.Type.(*dwarf.StructType); ok && structType.Name == "" {
+			result["kind"] = structType.Kind
+			result["name"] = t.Name
+		} else {
+			result = typeName(t.Type)
+		}
 	case *dwarf.QualType:
 		result = typeName(t.Type)
 	case *dwarf.VoidType, *dwarf.UnspecifiedType:
