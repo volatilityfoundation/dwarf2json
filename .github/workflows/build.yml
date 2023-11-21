@@ -11,10 +11,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v4
       with:
         go-version: 1.15
 
@@ -37,10 +37,19 @@ jobs:
         GOARCH: amd64
 
     - name: Archive production artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: dwarf2json
         path: |
+          dwarf2json-linux-amd64
+          dwarf2json-windows-amd64.exe
+          dwarf2json-darwin-amd64
+    
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
           dwarf2json-linux-amd64
           dwarf2json-windows-amd64.exe
           dwarf2json-darwin-amd64
