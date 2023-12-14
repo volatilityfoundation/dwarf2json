@@ -194,9 +194,9 @@ type vtypeJson struct {
 	Symbols   map[string]*vtypeSymbol   `json:"symbols"`
 }
 
-func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name string) {
+func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian string, off dwarf.Offset) error {
 	if structType.Incomplete {
-		return
+		return nil
 	}
 
 	st :=
@@ -230,9 +230,47 @@ func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name string) {
 			vtypeField.FieldType["kind"] = "bitfield"
 			vtypeField.FieldType["bit_length"] = field.BitSize
 			vtypeField.FieldType["type"] = fieldType
-			// calculation to change the DWARF offset from MSB to LSB
-			maxPos := (8 * field.ByteSize) - 1
-			vtypeField.FieldType["bit_position"] = maxPos - (field.BitOffset + (field.BitSize - 1))
+
+			var bitOffset int64
+			var byteOffset int64 = field.ByteOffset
+
+			// DWARF4 introduced a new attribute for describing bitfields,
+			// DW_AT_data_bit_offset. This is exposed by the debug/dwarf
+			// library as FieldType.DataBitOffset. This new field replaces the
+			// old FieldType.BitOffset for DWARF versions >= 5.
+
+			// According the the debug/dwarf library, the field with a value >
+			// 0 should be used. However this is not enough because there are
+			// cases where both fields can be zero at the same time.
+
+			// Because of this ambiguity, field.ByteSize is used as a heuristic
+			// to decide between which field to use. The FieldType.ByteSize is
+			// > 0, when FieldType.BitOffset is used.
+			if field.ByteSize > 0 {
+				// assume Dwarf <=4
+				if field.DataBitOffset > 0 {
+					return fmt.Errorf("bitfield heuristic violated at offset %v because DataBitOffset > 0", off)
+				}
+
+				bitOffset = field.BitOffset
+				if endian == "little" {
+					// calculation to change the DWARF offset from MSB to LSB
+					bitOffset = 8*field.ByteSize - (field.BitOffset + field.BitSize)
+				}
+				byteOffset += bitOffset / 8
+				bitOffset %= 8
+			} else {
+				// assuming DWARF version > 4
+				if field.BitOffset > 0 {
+					return fmt.Errorf("bitfield heuristic violated at offset %v because BitOffset > 0", off)
+				}
+				byteOffset = field.DataBitOffset / 8
+				bitOffset = field.DataBitOffset % 8
+			}
+
+			vtypeField.Offset = byteOffset
+			vtypeField.FieldType["bit_position"] = bitOffset
+
 		} else {
 			vtypeField.FieldType = fieldType
 		}
@@ -241,6 +279,8 @@ func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name string) {
 	}
 
 	doc.UserTypes[name] = st
+
+	return nil
 }
 
 func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract) error {
@@ -301,7 +341,10 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				return fmt.Errorf("%s is not a StructType?", genericType.String())
 			}
 
-			doc.addStruct(structType, structName(structType))
+			err = doc.addStruct(structType, structName(structType), endian, entry.Offset)
+			if err != nil {
+				return fmt.Errorf("could not parse struct: %s", err)
+			}
 		case dwarf.TagEnumerationType:
 			genericType, err := data.Type(entry.Offset)
 			if err != nil {
@@ -376,7 +419,10 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 
 			if structType, ok := typedefType.Type.(*dwarf.StructType); ok && structType.Name == "" {
-				doc.addStruct(structType, typedefType.Name)
+				err := doc.addStruct(structType, typedefType.Name, endian, entry.Offset)
+				if err != nil {
+					return fmt.Errorf("could not parse struct: %s", err)
+				}
 			}
 
 		}
