@@ -1055,7 +1055,7 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 				endian = "big"
 			}
 
-			data, err := DWARF(elfFile)
+			data, err := elfFile.DWARF()
 			if err != nil {
 				return nil, fmt.Errorf("could not get DWARF from %s: %v", f.FilePath, err)
 			}
