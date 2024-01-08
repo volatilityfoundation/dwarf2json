@@ -206,6 +206,7 @@ func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian strin
 			Kind:   structType.Kind,
 		}
 
+	anonymousCount := 0
 	for _, field := range structType.Field {
 		if field == nil {
 			continue
@@ -221,8 +222,9 @@ func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian strin
 		vtypeField := vtypeStructField{Offset: field.ByteOffset}
 		fieldName := field.Name
 		if fieldName == "" {
-			fieldName = fmt.Sprintf("unnamed_field_%x", field.ByteOffset)
+			fieldName = fmt.Sprintf("unnamed_field_%x", anonymousCount)
 			vtypeField.Anonymous = true
+			anonymousCount += 1
 		}
 
 		if field.BitSize != 0 {
