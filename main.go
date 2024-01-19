@@ -34,7 +34,7 @@ const (
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.7.0"
+	TOOL_VERSION   = "0.8.0"
 	FORMAT_VERSION = "6.2.0"
 )
 
