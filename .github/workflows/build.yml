@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v2
       with:
-        go-version: 1.15
+        go-version: 1.18
 
     - name: Build Linux AMD64
       run: go build -v -o dwarf2json-linux-amd64
