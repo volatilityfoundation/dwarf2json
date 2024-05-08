@@ -43,11 +43,12 @@ type Extract int
 
 // Defines information to extract during processing steps
 const (
-	DwarfSymbols  Extract = 1
-	DwarfTypes    Extract = 2
-	SymTabSymbols Extract = 4
-	ConstantData  Extract = 8
-	SystemMap     Extract = 16
+	DwarfSymbols         Extract = 1
+	DwarfTypes           Extract = 2
+	SymTabSymbols        Extract = 4
+	ConstantData         Extract = 8
+	SystemMap            Extract = 16
+	ReferenceSymbolTypes Extract = 32
 )
 
 // FileToProcess defines the file that needs to be processed and
@@ -690,10 +691,12 @@ Commands:
 
 	// linux subcommand setup
 	linuxArgs := pflag.NewFlagSet("linux", pflag.ExitOnError)
+	linuxBanner := linuxArgs.String("linux-banner", "", "Linux banner value matching `linux_banner` symbol")
 	elfPaths := linuxArgs.StringArray("elf", nil, "ELF file `PATH` to extract symbol and type information")
 	systemMapPaths := linuxArgs.StringArray("system-map", nil, "System.Map file `PATH` to extract symbol information")
 	elfTypePaths := linuxArgs.StringArray("elf-types", nil, "ELF file `PATH` to extract only type information")
 	elfSymbolPaths := linuxArgs.StringArray("elf-symbols", nil, "ELF file `PATH` to extract only symbol information")
+	symbolTypesReferencePath := linuxArgs.String("reference-symbols", "", "ISF reference file `PATH` with symbol types")
 	linuxArgs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s linux [OPTIONS]\n\n", TOOL_NAME)
 		linuxArgs.PrintDefaults()
@@ -767,13 +770,18 @@ Commands:
 			filesToProcess.Add(FileToProcess{FilePath: filePath, Extract: SystemMap})
 		}
 
+		// Reference symbol types
+		if *symbolTypesReferencePath != "" {
+			filesToProcess.Add(FileToProcess{FilePath: *symbolTypesReferencePath, Extract: ReferenceSymbolTypes})
+		}
+
 		if len(filesToProcess) == 0 {
 			fmt.Fprintf(os.Stderr, "No files specified\n")
 			linuxArgs.Usage()
 			os.Exit(1)
 		}
 
-		doc, err = generateLinux(filesToProcess)
+		doc, err = generateLinux(filesToProcess, *linuxBanner)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed linux processing: %v\n", err)
 			os.Exit(1)
@@ -1012,7 +1020,7 @@ func processMachoSymTab(doc *vtypeJson, machoFile *macho.File, extract Extract) 
 	return nil
 }
 
-func generateLinux(files FilesToProcess) (*vtypeJson, error) {
+func generateLinux(files FilesToProcess, linuxBanner string) (*vtypeJson, error) {
 
 	doc := newVtypeJson()
 	linuxMeta := new(unixMetadata)
@@ -1027,6 +1035,7 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 			if err != nil {
 				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
 			}
+			defer r.Close()
 
 			if err := processSystemMap(doc, r); err != nil {
 				return nil, fmt.Errorf("error processing system map: %v", err)
@@ -1037,6 +1046,20 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 			fileMeta.Kind = "system-map"
 			linuxMeta.Symbols = append(linuxMeta.Symbols, fileMeta)
 
+			continue
+		}
+
+		// process reference symbol types, and skip to the next file
+		if extract := f.Extract & (ReferenceSymbolTypes); extract != 0 {
+			r, err := os.Open(f.FilePath)
+			if err != nil {
+				return nil, fmt.Errorf("could not open %s: %v", f.FilePath, err)
+			}
+			defer r.Close()
+
+			if err := processReferenceSymbolTypes(doc, r); err != nil {
+				return nil, fmt.Errorf("error processing reference symbol types: %v", err)
+			}
 			continue
 		}
 
@@ -1090,8 +1113,56 @@ func generateLinux(files FilesToProcess) (*vtypeJson, error) {
 		}
 
 	}
+
+	if err := addLinuxBanner(doc, linuxBanner); err != nil {
+		return nil, fmt.Errorf("could not set linux banner: %v", err)
+	}
+
 	doc.Metadata.Linux = linuxMeta
+
 	return doc, nil
+}
+
+// processRefernceSymbolTypes adds symbol types from the reference reader.
+// The reader is assumed to be a valid vtypeJson marshalled file.
+func processReferenceSymbolTypes(doc *vtypeJson, refSymbolTypes io.Reader) error {
+	var refDoc vtypeJson
+	dec := json.NewDecoder(refSymbolTypes)
+	err := dec.Decode(&refDoc)
+	if err != nil {
+		return err
+	}
+
+	//Sort ref symbols in alph order
+	refSymbols := make([]string, 0, len(refDoc.Symbols))
+	for k := range refDoc.Symbols {
+		refSymbols = append(refSymbols, k)
+	}
+	sort.Strings(refSymbols)
+
+	//Create a cache of doc symbols in alph order
+	docSymbols := make([]string, 0, len(doc.Symbols))
+	for k := range doc.Symbols {
+		docSymbols = append(docSymbols, k)
+	}
+	sort.Strings(docSymbols)
+
+	//For each match, replace doc symbol type with reference symbol type
+	refIndex := 0
+	for _, symName := range docSymbols {
+		for j := refIndex; j < len(refSymbols); j++ {
+			// TODO: consider filtering and only adding types when the type
+			// is defined in doc.UserTypes or doc.BaseTypes.
+			if symName == refSymbols[j] {
+				// Copies a reference, since refDoc is not modified.
+				// TODO: consider doing a deep copy.
+				doc.Symbols[symName].SymbolType = refDoc.Symbols[symName].SymbolType
+				refIndex = j
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // processSystemMap adds the missing symbol information from system.map to vtypeJson doc
@@ -1187,5 +1258,32 @@ func processElfSymTab(doc *vtypeJson, elfFile *elf.File, extract Extract) error 
 			cb(elfsym)
 		}
 	}
+	return nil
+}
+
+func addLinuxBanner(doc *vtypeJson, linuxBanner string) error {
+	// Exit if linux banner is not set
+	if linuxBanner == "" {
+		return nil
+	}
+
+	elfSymbol := "linux_banner"
+	sym, ok := doc.Symbols[elfSymbol]
+	if !ok {
+		return fmt.Errorf("linux_banner symbol does not exist")
+	}
+
+	// Make sure linux banner has the newline and Null bytes (0x0a00)
+	constantData := []byte(linuxBanner)
+	if constantData[len(constantData)-1] != 0x00 {
+		if constantData[len(constantData)-2] != 0x0a {
+			constantData = append(constantData, 0x0a)
+		}
+		constantData = append(constantData, 0x00)
+	}
+
+	sym.ConstantData = constantData
+	doc.Symbols[elfSymbol] = sym
+
 	return nil
 }
