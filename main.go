@@ -76,7 +76,7 @@ func (f *FilesToProcess) Add(newFile FileToProcess) {
 
 // The symbol names are part of Linux's or Mac's read-only data
 // Their contents will be saved, if the symbol is found
-var constantLinuxDataSymbols = []string{"linux_banner"}
+var constantLinuxDataSymbols = []string{"linux_banner", "version"}
 var constantMacosDataSymbols = []string{"version"}
 
 // The compiler can add a leading underscore to symbol names in the symbol
@@ -615,7 +615,7 @@ func readELFSymbol(file *elf.File, symbol elf.Symbol) ([]byte, error) {
 	var err error
 
 	for _, section := range file.Sections {
-		if section.Name == ".rodata" &&
+		if (section.Name == ".data" || section.Name == ".rodata") &&
 			(section.Flags&elf.SHF_ALLOC) == elf.SHF_ALLOC &&
 			section.Addr <= symbol.Value &&
 			(section.Addr+section.Size) >= (symbol.Value+symbol.Size) {
