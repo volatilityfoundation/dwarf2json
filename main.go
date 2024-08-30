@@ -50,6 +50,11 @@ const (
 	SystemMap     Extract = 16
 )
 
+// DW_AT_language bindings
+const (
+	DW_LANG_Rust = 0x1c
+)
+
 // FileToProcess defines the file that needs to be processed and
 // information that should be extracted from that file
 type FileToProcess struct {
@@ -194,7 +199,7 @@ type vtypeJson struct {
 	Symbols   map[string]*vtypeSymbol   `json:"symbols"`
 }
 
-func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian string, off dwarf.Offset) error {
+func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian string, off dwarf.Offset, codeNs string) error {
 	if structType.Incomplete {
 		return nil
 	}
@@ -212,7 +217,7 @@ func (doc *vtypeJson) addStruct(structType *dwarf.StructType, name, endian strin
 			continue
 		}
 
-		fieldType := typeName(field.Type)
+		fieldType := typeName(field.Type, codeNs)
 
 		// skip fields for which type cannot be obtained
 		if fieldType == nil {
@@ -289,7 +294,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 
 	doc.BaseTypes["void"] = &vtypeBaseType{Size: 0, Signed: false, Kind: "void", Endian: endian}
 
-	symbolsCb := func(entry *dwarf.Entry, addressSize int) error {
+	symbolsCb := func(entry *dwarf.Entry, addressSize int, codeNs string) error {
 		switch entry.Tag {
 		case dwarf.TagVariable:
 			name, _ := entry.Val(dwarf.AttrName).(string)
@@ -316,20 +321,20 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			sym := &vtypeSymbol{Address: address}
 			genericType, err := data.Type(typOff)
 			if err == nil {
-				sym.SymbolType = typeName(genericType)
+				sym.SymbolType = typeName(genericType, codeNs)
 			} else {
 				voidType := make(map[string]interface{}, 0)
 				voidType["kind"] = "base"
 				voidType["name"] = "void"
 				sym.SymbolType = voidType
 			}
-			doc.Symbols[name] = sym
+			doc.Symbols[codeNs+name] = sym
 		}
 		return nil
 
 	}
 
-	typesCb := func(entry *dwarf.Entry, addressSize int) error {
+	typesCb := func(entry *dwarf.Entry, addressSize int, codeNs string) error {
 		switch entry.Tag {
 		case dwarf.TagUnionType:
 			fallthrough
@@ -342,8 +347,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			if ok != true {
 				return fmt.Errorf("%s is not a StructType?", genericType.String())
 			}
-
-			err = doc.addStruct(structType, structName(structType), endian, entry.Offset)
+			err = doc.addStruct(structType, structName(structType, codeNs), endian, entry.Offset, codeNs)
 			if err != nil {
 				return fmt.Errorf("could not parse struct: %s", err)
 			}
@@ -378,7 +382,15 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			// Sort keys to make map enum type selection deterministic
 			keys := make([]string, 0, len(doc.BaseTypes))
 			for k := range doc.BaseTypes {
-				keys = append(keys, k)
+				// Avoid inserting language typed baseTypes in the (default) non-typed
+				// C baseTypes pool.
+				if codeNs == "" {
+					if !strings.Contains(k, ".") {
+						keys = append(keys, k)
+					}
+				} else if strings.HasPrefix(k, codeNs) {
+					keys = append(keys, k)
+				}
 			}
 			sort.Strings(keys)
 			// Now match type using sorted keys
@@ -390,14 +402,14 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				}
 			}
 
-			doc.Enums[enumName(enumType)] = et
+			doc.Enums[enumName(enumType, codeNs)] = et
 		case dwarf.TagPointerType:
-			if _, present := doc.BaseTypes["pointer"]; !present {
+			if _, present := doc.BaseTypes[codeNs+"pointer"]; !present {
 				genericType, err := data.Type(entry.Offset)
 				if err != nil {
 					break
 				}
-				doc.BaseTypes["pointer"] =
+				doc.BaseTypes[codeNs+"pointer"] =
 					&vtypeBaseType{Size: genericType.Size(), Signed: false, Kind: "int", Endian: endian}
 			}
 		case dwarf.TagBaseType:
@@ -406,8 +418,8 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 				break
 			}
 			common := genericType.Common()
-			if _, present := doc.BaseTypes[common.Name]; !present {
-				doc.BaseTypes[common.Name] = newBasetype(genericType, endian)
+			if _, present := doc.BaseTypes[codeNs+common.Name]; !present {
+				doc.BaseTypes[codeNs+common.Name] = newBasetype(genericType, endian)
 			}
 		case dwarf.TagTypedef:
 			genericType, err := data.Type(entry.Offset)
@@ -421,7 +433,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			}
 
 			if structType, ok := typedefType.Type.(*dwarf.StructType); ok && structType.Name == "" {
-				err := doc.addStruct(structType, typedefType.Name, endian, entry.Offset)
+				err := doc.addStruct(structType, codeNs+typedefType.Name, endian, entry.Offset, codeNs)
 				if err != nil {
 					return fmt.Errorf("could not parse struct: %s", err)
 				}
@@ -431,7 +443,7 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 		return nil
 	}
 
-	callBacks := []func(entry *dwarf.Entry, addressSize int) error{}
+	callBacks := []func(entry *dwarf.Entry, addressSize int, codeNs string) error{}
 
 	if extract&DwarfTypes != 0 {
 		callBacks = append(callBacks, typesCb)
@@ -440,6 +452,8 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 		callBacks = append(callBacks, symbolsCb)
 	}
 
+	// Initialize namespace prefix to an empty string
+	codeNs := ""
 	// go through the DWARF
 	reader := data.Reader()
 	for {
@@ -453,8 +467,25 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			return err
 		}
 
+		/* Check if this entry is a compile unit.
+		This will mark all children of this CU with
+		the corresponding prefix ("<language>.").
+		The goal is to avoid conflicts between common names (structs, symbols...)
+		accross multiple languages, by prefixing objects with a namespace. */
+		if entry.Tag == dwarf.TagCompileUnit {
+			// Detect RUST language, needed for Linux kernel 6.5+
+			if entry.Val(dwarf.AttrLanguage).(int64) == DW_LANG_Rust {
+				codeNs = "rust."
+			} else {
+				// Default to an empty string for other languages (C mostly).
+				// Avoid trying to specifically detect C language
+				// to prevent edge cases.
+				codeNs = ""
+			}
+		}
+
 		for _, cb := range callBacks {
-			err = cb(entry, reader.AddressSize())
+			err = cb(entry, reader.AddressSize(), codeNs)
 			if err != nil {
 				return err
 			}
@@ -517,31 +548,31 @@ func locationToUint64(loc *dwarf.Field, addressSize int) uint64 {
 	return result
 }
 
-func structName(dwarfStruct *dwarf.StructType) string {
+func structName(dwarfStruct *dwarf.StructType, codeNs string) string {
 	if dwarfStruct.StructName != "" {
-		return dwarfStruct.StructName
+		return codeNs + dwarfStruct.StructName
 	}
 
 	data := sha1.Sum([]byte(dwarfStruct.Defn()))
 	return fmt.Sprintf("unnamed_%8x", data[0:8])
 }
 
-func enumName(dwarfEnum *dwarf.EnumType) string {
+func enumName(dwarfEnum *dwarf.EnumType, codeNs string) string {
 	if dwarfEnum.EnumName != "" {
-		return dwarfEnum.EnumName
+		return codeNs + dwarfEnum.EnumName
 	}
 
 	data := sha1.Sum([]byte(dwarfEnum.String()))
 	return fmt.Sprintf("unnamed_%8x", data[0:8])
 }
 
-func typeName(dwarfType dwarf.Type) map[string]interface{} {
+func typeName(dwarfType dwarf.Type, codeNs string) map[string]interface{} {
 	result := make(map[string]interface{}, 0)
 
 	switch t := dwarfType.(type) {
 	case *dwarf.StructType:
 		result["kind"] = t.Kind
-		result["name"] = structName(t)
+		result["name"] = structName(t, codeNs)
 	case *dwarf.ArrayType:
 		result["kind"] = "array"
 		if t.Count < 0 {
@@ -549,25 +580,25 @@ func typeName(dwarfType dwarf.Type) map[string]interface{} {
 		} else {
 			result["count"] = t.Count
 		}
-		result["subtype"] = typeName(t.Type)
+		result["subtype"] = typeName(t.Type, codeNs)
 	case *dwarf.PtrType:
 		result["kind"] = "pointer"
-		result["subtype"] = typeName(t.Type)
+		result["subtype"] = typeName(t.Type, codeNs)
 	case *dwarf.EnumType:
 		result["kind"] = "enum"
-		result["name"] = enumName(t)
+		result["name"] = enumName(t, codeNs)
 	case *dwarf.BoolType, *dwarf.CharType, *dwarf.ComplexType, *dwarf.IntType, *dwarf.FloatType, *dwarf.UcharType, *dwarf.UintType:
 		result["kind"] = "base"
-		result["name"] = t.Common().Name
+		result["name"] = codeNs + t.Common().Name
 	case *dwarf.TypedefType:
 		if structType, ok := t.Type.(*dwarf.StructType); ok && structType.Name == "" {
 			result["kind"] = structType.Kind
-			result["name"] = t.Name
+			result["name"] = codeNs + t.Name
 		} else {
-			result = typeName(t.Type)
+			result = typeName(t.Type, codeNs)
 		}
 	case *dwarf.QualType:
-		result = typeName(t.Type)
+		result = typeName(t.Type, codeNs)
 	case *dwarf.VoidType, *dwarf.UnspecifiedType:
 		result["kind"] = "base"
 		result["name"] = "void"
