@@ -384,8 +384,10 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			for k := range doc.BaseTypes {
 				// Avoid inserting language typed baseTypes in the (default) non-typed
 				// C baseTypes pool.
-				if codeNs == "" && !strings.Contains(k, ".") {
-					keys = append(keys, k)
+				if codeNs == "" {
+					if !strings.Contains(k, ".") {
+						keys = append(keys, k)
+					}
 				} else if strings.HasPrefix(k, codeNs) {
 					keys = append(keys, k)
 				}
