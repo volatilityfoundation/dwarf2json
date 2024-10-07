@@ -680,6 +680,9 @@ Commands:
   linux  generate ISF for Linux analysis
   mac    generate ISF for macOS analysis
 
+Options:
+  -h, --help     Show this screen.
+  -v, --version  Show tool and output schema version.
 `,
 			os.Args[0])
 	}
@@ -789,6 +792,10 @@ Commands:
 
 	case "-h", "--help":
 		pflag.Usage()
+		os.Exit(0)
+	case "-v", "--version":
+		fmt.Printf("%s %s\n", TOOL_NAME, TOOL_VERSION)
+		fmt.Printf("output schema %s\n", FORMAT_VERSION)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(

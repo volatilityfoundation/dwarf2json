@@ -22,6 +22,10 @@ To run:
   Commands:
     linux  generate ISF for Linux analysis
     mac    generate ISF for macOS analysis
+
+  Options:
+  -h, --help     Show this screen.
+  -v, --version  Show tool and output schema version.
 ```
 
 Note: processing large DWARF files requires a minimum of 8GB RAM.
