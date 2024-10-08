@@ -29,12 +29,14 @@ import (
 )
 
 const (
+	DW_LANG_Rust = 0x001c
+
 	DW_OP_addr = 0x3
 )
 
 const (
 	TOOL_NAME      = "dwarf2json"
-	TOOL_VERSION   = "0.8.0"
+	TOOL_VERSION   = "0.9.0"
 	FORMAT_VERSION = "6.2.0"
 )
 
@@ -448,9 +450,15 @@ func (doc *vtypeJson) addDwarf(data *dwarf.Data, endian string, extract Extract)
 			// fmt.Printf("Done!\n")
 			break
 		}
-
 		if err != nil {
 			return err
+		}
+
+		if entry.Tag == dwarf.TagCompileUnit || entry.Tag == dwarf.TagTypeUnit || entry.Tag == dwarf.TagPartialUnit {
+			if val, ok := entry.Val(dwarf.AttrLanguage).(int64); ok && val == DW_LANG_Rust {
+				reader.SkipChildren()
+				continue
+			}
 		}
 
 		for _, cb := range callBacks {
@@ -672,6 +680,9 @@ Commands:
   linux  generate ISF for Linux analysis
   mac    generate ISF for macOS analysis
 
+Options:
+  -h, --help     Show this screen.
+  -v, --version  Show tool and output schema version.
 `,
 			os.Args[0])
 	}
@@ -781,6 +792,10 @@ Commands:
 
 	case "-h", "--help":
 		pflag.Usage()
+		os.Exit(0)
+	case "-v", "--version":
+		fmt.Printf("%s %s\n", TOOL_NAME, TOOL_VERSION)
+		fmt.Printf("output schema %s\n", FORMAT_VERSION)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(
